@@ -1,0 +1,296 @@
+@extends('layouts.template2')
+@section('breadcrumb')
+    <div class="content container-fluid" style="background-color: #eff8f3;">
+        <div class="page-header">
+            <div class="row">
+                <div class="col-sm-12">
+                    <div class="page-sub-header d-flex justify-content-between align-items-center">
+                        <h3 class="page-title mb-0">
+                            <i class="fas fa-user-friends me-2"></i>CCBRT Relation - {{ $user->fname }} {{ $user->lname }}
+                        </h3>
+                        <a href="{{ route('employees_details.show', $user->id) }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left me-2"></i>Back to Employee Details
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="container mt-5">
+            <div class="alert alert-info mb-4">
+                <i class="fas fa-info-circle me-2"></i>
+                <strong>HR Mode:</strong> You are adding CCBRT relations for <strong>{{ $user->fname }} {{ $user->lname }}</strong>.
+                <br><small>Please enter the name of any person the staff member has a relation with from CCBRT.</small>
+            </div>
+
+            <div class="row">
+                <!-- Left Side: Add or Edit Relation Form -->
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-body">
+                            <!-- Check for success or error messages -->
+                            @if (session('success'))
+                                <div class="alert alert-success alert-dismissible fade show">
+                                    {{ session('success') }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                                </div>
+                            @endif
+
+                            @if (session('error'))
+                                <div class="alert alert-danger alert-dismissible fade show">
+                                    {{ session('error') }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                                </div>
+                            @endif
+
+                            <!-- Display validation errors -->
+                            @if ($errors->any())
+                                <div class="alert alert-danger alert-dismissible fade show">
+                                    <strong>Please fix the following errors:</strong>
+                                    <ul class="mb-0 mt-2">
+                                        @foreach ($errors->all() as $error)
+                                            <li>{{ $error }}</li>
+                                        @endforeach
+                                    </ul>
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                                </div>
+                            @endif
+
+                            <form method="POST" id="relationForm"
+                                action="{{ route('hr.employee.save-ccbrt-relation', $user->id) }}">
+                                @csrf
+
+                                <div class="form-group">
+                                    <label>Names <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" name="names" id="names"
+                                        value="{{ old('names', $relationToEdit->names ?? '') }}" placeholder="John Doe"
+                                        required maxlength="100">
+                                </div>
+
+                                @php
+                                    $standardRelations = ['Colleague', 'Brother', 'Sister', 'Father', 'Mother', 'Spouse', 'Friend', 'Relative'];
+                                    $currentRelation = old('relation', $relationToEdit->relation ?? '');
+                                    $isOtherRelation = !in_array($currentRelation, $standardRelations) && !empty($currentRelation);
+                                @endphp
+
+                                <div class="form-group">
+                                    <label>Relation <span class="text-danger">*</span></label>
+                                    <select class="form-control" name="relation" id="relation" required onchange="toggleOtherRelationField()">
+                                        <option value="" disabled selected>Select Relation</option>
+                                        <option value="Colleague" {{ $currentRelation == 'Colleague' ? 'selected' : '' }}>Colleague</option>
+                                        <option value="Brother" {{ $currentRelation == 'Brother' ? 'selected' : '' }}>Brother</option>
+                                        <option value="Sister" {{ $currentRelation == 'Sister' ? 'selected' : '' }}>Sister</option>
+                                        <option value="Father" {{ $currentRelation == 'Father' ? 'selected' : '' }}>Father</option>
+                                        <option value="Mother" {{ $currentRelation == 'Mother' ? 'selected' : '' }}>Mother</option>
+                                        <option value="Spouse" {{ $currentRelation == 'Spouse' ? 'selected' : '' }}>Spouse</option>
+                                        <option value="Friend" {{ $currentRelation == 'Friend' ? 'selected' : '' }}>Friend</option>
+                                        <option value="Relative" {{ $currentRelation == 'Relative' ? 'selected' : '' }}>Relative</option>
+                                        <option value="Other" {{ $isOtherRelation ? 'selected' : '' }}>Other</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group" id="other-relation-field" style="display: {{ $isOtherRelation ? 'block' : 'none' }};">
+                                    <label>Please specify relation <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" name="other_relation" id="other_relation"
+                                        value="{{ old('other_relation', $isOtherRelation ? $currentRelation : '') }}"
+                                        placeholder="Enter relation" maxlength="50">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Department <span class="text-danger">*</span></label>
+                                    <select class="form-control" name="department" id="department" required>
+                                        <option value="" disabled selected>Select Department</option>
+                                        @foreach ($departments as $department)
+                                            <option value="{{ $department->id }}"
+                                                {{ old('department', $relationToEdit->department ?? '') == $department->id ? 'selected' : '' }}>
+                                                {{ $department->dept_name }}
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Position <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" name="position" id="position"
+                                        value="{{ old('position', $relationToEdit->position ?? '') }}"
+                                        placeholder="e.g., Manager, Doctor" required maxlength="100">
+                                </div>
+
+                                <div class="d-flex gap-2 mt-3">
+                                    @if (isset($relationToEdit))
+                                        <a href="{{ route('profile.ccbrt_relation') }}" class="btn btn-secondary">Cancel</a>
+                                    @endif
+                                    <div class="d-flex gap-2">
+                                        <button type="submit" class="btn btn-primary">
+                                            {{ isset($relationToEdit) ? 'Update Relation' : 'Add' }}
+                                        </button>
+                                        <a href="{{ route('employees_details.show', $user->id) }}" class="btn btn-success">
+                                            <i class="fas fa-check me-2"></i>Done
+                                        </a>
+                                    </div>
+                                </div>
+                            </form>
+
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Side: View Relations Table -->
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">View Relations</h5>
+                            <div class="table-responsive">
+                                <table class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Names</th>
+                                            <th>Relation</th>
+                                            <th>Department</th>
+                                            <th>Position</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @forelse ($relations as $relation)
+                                            <tr>
+                                                <td>{{ $loop->iteration }}</td>
+                                                <td>{{ $relation->names }}</td>
+                                                <td>{{ $relation->relation }}</td>
+                                                <td>{{ $relation->department_name ?? 'N/A' }}</td>
+                                                <td>{{ $relation->position }}</td>
+                                                <td>
+                                                    <div class="d-flex gap-1">
+                                                        {{-- Edit and Delete functionality can be added later if needed --}}
+                                                        <form action="{{ route('profile.deleteRelation', $relation->id) }}" 
+                                                              method="POST" 
+                                                              class="d-inline delete-relation-form"
+                                                              data-name="{{ $relation->names }}">
+                                                            @csrf
+                                                            @method('DELETE')
+                                                            <button type="submit" class="btn btn-danger btn-sm" title="Delete">
+                                                                <i class="fas fa-trash-alt"></i>
+                                                            </button>
+                                                        </form>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        @empty
+                                            <tr>
+                                                <td colspan="6" class="text-center text-muted">No relations added yet.</td>
+                                            </tr>
+                                        @endforelse
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="d-flex justify-content-between align-items-center mt-3">
+                                <a href="{{ route('profile.languageKnowledge') }}" class="btn btn-secondary">Previous</a>
+                                <form action="{{ route('conflict-interest.viewit') }}" method="GET">
+                                    <button type="submit" class="btn btn-primary">Next</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+        // Toggle Other Relation Field
+        function toggleOtherRelationField() {
+            const relation = document.getElementById('relation');
+            const otherField = document.getElementById('other-relation-field');
+            const otherInput = document.getElementById('other_relation');
+            
+            if (relation && otherField) {
+                if (relation.value === 'Other') {
+                    otherField.style.display = 'block';
+                    if (otherInput) {
+                        otherInput.required = true;
+                    }
+                } else {
+                    otherField.style.display = 'none';
+                    if (otherInput) {
+                        otherInput.required = false;
+                        otherInput.value = '';
+                    }
+                }
+            }
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            toggleOtherRelationField();
+
+            // Auto-capitalize names
+            const namesInput = document.getElementById('names');
+            if (namesInput) {
+                namesInput.addEventListener('input', function(e) {
+                    let value = e.target.value;
+                    value = value.replace(/[^A-Za-z\s]/g, '');
+                    const endsWithSpace = /\s$/.test(e.target.value);
+                    value = value
+                        .split(' ')
+                        .filter(word => word.length > 0)
+                        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                        .join(' ');
+                    if (endsWithSpace) {
+                        value += ' ';
+                    }
+                    e.target.value = value;
+                });
+            }
+
+            // Handle delete with SweetAlert
+            document.querySelectorAll('.delete-relation-form').forEach(form => {
+                form.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    const form = this;
+                    const name = form.getAttribute('data-name');
+                    
+                    if (typeof Swal !== 'undefined') {
+                        Swal.fire({
+                            title: 'Delete Relation?',
+                            text: `Are you sure you want to delete the relation with ${name}?`,
+                            icon: 'warning',
+                            showCancelButton: true,
+                            confirmButtonText: 'Yes, Delete',
+                            cancelButtonText: 'Cancel',
+                            confirmButtonColor: '#dc3545',
+                            cancelButtonColor: '#6c757d',
+                            reverseButtons: true
+                        }).then((result) => {
+                            if (result.isConfirmed) {
+                                form.submit();
+                            }
+                        });
+                    } else {
+                        if (confirm(`Are you sure you want to delete the relation with ${name}?`)) {
+                            form.submit();
+                        }
+                    }
+                });
+            });
+
+            // Form validation
+            const form = document.getElementById('relationForm');
+            if (form) {
+                form.addEventListener('submit', function(e) {
+                    const relation = document.getElementById('relation').value;
+                    
+                    if (relation === 'Other') {
+                        const otherRelation = document.getElementById('other_relation').value;
+                        if (!otherRelation || otherRelation.trim() === '') {
+                            e.preventDefault();
+                            alert('Please specify the relation.');
+                            return false;
+                        }
+                    }
+                });
+            }
+        });
+    </script>
+@endsection
