@@ -159,7 +159,7 @@
 
                 <!-- Deactivated Users Card -->
                 <div class="col-md-3 col-sm-6">
-                    <div class="card border h-100 stats-card" style="cursor: pointer;" onclick="filterByStatus('deactivated')">
+                    div class="card border h-100 stats-card" style="cursor: pointer;" onclick="filterByStatus('deactivated')">
                         <div class="card-body p-3">
                             <div class="d-flex align-items-center justify-content-between">
                                 <div>
@@ -528,6 +528,7 @@
     </div>
 
     {{-- JS Libraries --}}
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.1.js"></script>
     <script src="https://cdn.datatables.net/2.1.2/js/dataTables.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
@@ -914,5 +915,4 @@
             });
         });
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
 @endsection
