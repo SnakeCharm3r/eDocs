@@ -7,8 +7,9 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Cache;
-use RealRashid\SweetAlert\Facades\Alert;
+use App\Mail\QueueTestMail;
 
 class SettingsController extends Controller
 {
@@ -60,6 +61,28 @@ class SettingsController extends Controller
             return back()->with('error', 'Failed to send test email: ' . $e->getMessage());
         }
     }
+
+    /**
+     * Queue a test email to verify queue/worker is working.
+     */
+    public function sendTestQueueEmail(Request $request)
+    {
+        $request->validate([
+            'test_queue_email' => 'required|email',
+        ]);
+
+        try {
+            Mail::to($request->test_queue_email)->queue(new QueueTestMail($request->test_queue_email));
+
+            return back()->with(
+                'success',
+                'Test email has been queued. Ensure a queue worker is running (e.g. php artisan queue:work). You should receive the email shortly.'
+            );
+        } catch (\Exception $e) {
+            return back()->with('error', 'Failed to queue test email: ' . $e->getMessage());
+        }
+    }
+
     private function setEnv(array $values)
     {
         $envPath = base_path('.env');
@@ -147,8 +170,11 @@ class SettingsController extends Controller
     {
         $locumDeadline = self::getSetting('locum_submission_deadline', 5);
         $oncallDeadline = self::getSetting('oncall_submission_deadline', 5);
+        $nightShiftDeadline = self::getSetting('night_shift_submission_deadline', 5);
+        $locumExpiredAgreementUseUntil = self::getSetting('locum_expired_agreement_use_until', '');
+        $nightAllowanceAmountPerDay = self::getSetting('night_allowance_amount_per_day', 0);
 
-        return view('setting.deadlines', compact('locumDeadline', 'oncallDeadline'));
+        return view('setting.deadlines', compact('locumDeadline', 'oncallDeadline', 'nightShiftDeadline', 'locumExpiredAgreementUseUntil', 'nightAllowanceAmountPerDay'));
     }
 
     /**
@@ -157,17 +183,28 @@ class SettingsController extends Controller
     public function updateDeadlineSettings(Request $request)
     {
         $request->validate([
-            'locum_submission_deadline' => 'required|integer|min:1|max:28',
-            'oncall_submission_deadline' => 'required|integer|min:1|max:28',
+            'locum_submission_deadline'       => 'required|integer|min:1|max:28',
+            'oncall_submission_deadline'      => 'required|integer|min:1|max:28',
+            'night_shift_submission_deadline' => 'required|integer|min:1|max:28',
+            'locum_expired_agreement_use_until' => 'nullable|date',
+            'night_allowance_amount_per_day'    => 'required|numeric|min:0',
         ]);
 
         try {
             $this->setSetting('locum_submission_deadline', $request->locum_submission_deadline);
             $this->setSetting('oncall_submission_deadline', $request->oncall_submission_deadline);
+            $this->setSetting('night_shift_submission_deadline', $request->night_shift_submission_deadline);
+            $this->setSetting('locum_expired_agreement_use_until', $request->filled('locum_expired_agreement_use_until')
+                ? $request->locum_expired_agreement_use_until
+                : '');
+            $this->setSetting('night_allowance_amount_per_day', $request->night_allowance_amount_per_day);
 
             // Clear cache
             Cache::forget('locum_submission_deadline');
             Cache::forget('oncall_submission_deadline');
+            Cache::forget('night_shift_submission_deadline');
+            Cache::forget('locum_expired_agreement_use_until');
+            Cache::forget('night_allowance_amount_per_day');
 
             return back()->with('success', 'Deadline settings updated successfully.');
         } catch (\Exception $e) {
@@ -209,6 +246,83 @@ class SettingsController extends Controller
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+        }
+    }
+
+    /**
+     * Display cron/queue job monitor (pending jobs, failed jobs, scheduled tasks).
+     */
+    public function jobMonitor()
+    {
+        $queueDriver = config('queue.default');
+        $pendingCount = 0;
+        if ($queueDriver === 'database' && Schema::hasTable('jobs')) {
+            $pendingCount = DB::table('jobs')->count();
+        }
+
+        $failedJobs = [];
+        if (Schema::hasTable('failed_jobs')) {
+            $failedJobs = DB::table('failed_jobs')
+                ->orderByDesc('failed_at')
+                ->limit(100)
+                ->get()
+                ->map(function ($job) {
+                    $displayName = $job->queue;
+                    try {
+                        $payload = json_decode($job->payload, true);
+                        if (isset($payload['displayName'])) {
+                            $displayName = $payload['displayName'];
+                        }
+                    } catch (\Throwable $e) {
+                        // keep queue as display
+                    }
+                    return (object) [
+                        'id' => $job->id,
+                        'uuid' => $job->uuid,
+                        'queue' => $job->queue,
+                        'connection' => $job->connection,
+                        'display_name' => $displayName,
+                        'failed_at' => $job->failed_at,
+                    ];
+                });
+        }
+
+        $scheduleListOutput = '';
+        try {
+            Artisan::call('schedule:list');
+            $scheduleListOutput = trim(Artisan::output());
+        } catch (\Throwable $e) {
+            $scheduleListOutput = 'Unable to list schedule: ' . $e->getMessage();
+        }
+
+        return view('setting.jobs', compact('queueDriver', 'pendingCount', 'failedJobs', 'scheduleListOutput'));
+    }
+
+    /**
+     * Retry a single failed job by UUID.
+     */
+    public function retryFailedJob(string $uuid)
+    {
+        try {
+            Artisan::call('queue:retry', ['id' => $uuid]);
+            $output = trim(Artisan::output());
+            return back()->with('success', $output ?: 'Job pushed back onto the queue.');
+        } catch (\Throwable $e) {
+            return back()->with('error', 'Failed to retry job: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Retry all failed jobs.
+     */
+    public function retryAllFailedJobs(Request $request)
+    {
+        try {
+            Artisan::call('queue:retry', ['id' => ['all']]);
+            $output = trim(Artisan::output());
+            return back()->with('success', $output ?: 'All failed jobs have been pushed back onto the queue.');
+        } catch (\Throwable $e) {
+            return back()->with('error', 'Failed to retry jobs: ' . $e->getMessage());
         }
     }
 }

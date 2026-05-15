@@ -9,28 +9,25 @@ class Division extends Model
 {
     use HasFactory;
 
+    // Mass assignable fields
     protected $fillable = [
         'name',
-        'departments', 
-        'description', 
+        'department',
+        'description',
         'code',
         'status',
         'location',
         'HEC',
-    ];
-
-    // Cast departments to array for automatic conversion
-    protected $casts = [
-        'departments' => 'array',
+        'delete_status',
     ];
 
     /**
-     * Get the actual department models (if you need them)
-     * This is optional but useful for displaying department names
+     * A Division can have many Departments (many-to-many)
      */
-    public function departmentModels()
+    public function departments()
     {
-        return Departments::whereIn('id', $this->departments ?? [])->get();
+        return $this->belongsToMany(Departments::class, 'division_department', 'division_id', 'department_id')
+            ->withTimestamps();
     }
 
     /**
@@ -41,11 +38,8 @@ class Division extends Model
         return $this->hasMany(CcbrtContract::class);
     }
 
-    /**
-     * A Division belongs to one HEC (fixed relationship)
-     */
-    public function hec()
+    public function Hecs()
     {
-        return $this->belongsTo(Hec::class, 'HEC');
+        return $this->hasMany(Hec::class);
     }
 }

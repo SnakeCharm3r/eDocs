@@ -17,28 +17,152 @@
             border-radius: 12px;
             padding: 12px;
         }
+
+        .stat-card {
+            background: #ffffff;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 1rem 1.2rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+        }
+
+        .stat-card.primary {
+            background: #ffffff;
+            border-left: 4px solid #4e73df;
+        }
+
+        .stat-card.success {
+            background: #ffffff;
+            border-left: 4px solid #1cc88a;
+        }
+
+        .stat-card.info {
+            background: #ffffff;
+            border-left: 4px solid #36b9cc;
+        }
+
+        .stat-card.warning {
+            background: #ffffff;
+            border-left: 4px solid #f6c23e;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 0.3rem 0;
+            color: #333;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .stat-card small {
+            color: #888;
+            font-size: 0.78rem;
+        }
+
+        .stat-icon {
+            font-size: 1.8rem;
+            position: absolute;
+            right: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0.6;
+        }
+        
+        .stat-icon i {
+            color: inherit;
+        }
+
+        .attendance-table {
+            font-size: 0.9rem;
+        }
+
+        .attendance-table thead th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .attendance-table tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .late-arrival {
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .early-departure {
+            color: #fd7e14;
+            font-weight: 600;
+        }
+
+        .on-time {
+            color: #198754;
+        }
+
+        .pattern-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        @media (max-width: 768px) {
+            .stat-card {
+                margin-bottom: 1rem;
+            }
+            .attendance-table {
+                font-size: 0.8rem;
+            }
+            .stat-value {
+                font-size: 1.2rem;
+            }
+            .stat-icon {
+                font-size: 1.4rem;
+            }
+        }
     </style>
 
     <div class="page-wrapper">
         <div class="content container-fluid">
 
             <!-- Header -->
-            <div class="page-header">
-                <div class="row">
-                    <div class="col-sm-12">
-                        <div class="page-sub-header d-flex align-items-center justify-content-between flex-wrap gap-2">
-                            <div>
-                                <h3 class="page-title mb-1">
-                                    Clock History for
-                                    <span class="text-primary text-decoration-underline">
-                                        {{ $user->name ?? 'User ID: ' . $user->userid }}
-                                    </span>
+            <div class="page-header mb-4">
+                <div class="card shadow-sm border-0" style="border-left: 5px solid #61ce70 !important;">
+                    <div class="card-body py-3">
+                        <div class="d-flex align-items-center gap-3 flex-wrap">
+                            <div class="rounded-circle d-flex align-items-center justify-content-center"
+                                 style="width: 56px; height: 56px; background: linear-gradient(135deg, #61ce70, #36b9cc); color: #fff; font-size: 1.5rem; font-weight: 700; flex-shrink: 0;">
+                                {{ strtoupper(substr($user->name ?? 'U', 0, 1)) }}{{ strtoupper(substr(explode(' ', $user->name ?? 'U')[1] ?? '', 0, 1)) }}
+                            </div>
+                            <div class="flex-grow-1">
+                                <h3 class="page-title mb-1" style="font-size: 1.35rem;">
+                                    {{ $user->name ?? 'User ID: ' . $user->userid }}
                                 </h3>
-                                <div class="text-muted">
-                                    <strong>Employee Code:</strong> {{ $user->userid ?? '—' }}
+                                <div class="d-flex flex-wrap gap-3 text-muted" style="font-size: 0.9rem;">
+                                    <span><i class="fas fa-id-badge me-1" style="color: #4e73df;"></i> {{ $user->userid ?? '—' }}</span>
                                     @if (!empty($user->department))
-                                        &nbsp; | &nbsp; <strong>Department:</strong> {{ $user->department }}
+                                        <span><i class="fas fa-building me-1" style="color: #1cc88a;"></i> {{ $user->department }}</span>
                                     @endif
+                                    <span><i class="fas fa-calendar-alt me-1" style="color: #f6c23e;"></i> {{ date('F Y', mktime(0, 0, 0, $month, 1, $year)) }}</span>
                                 </div>
                             </div>
                         </div>
@@ -54,11 +178,11 @@
             @endif
 
             <!-- Filters + Export -->
-            <div class="card mb-3">
+            <div class="card mb-4 shadow-sm">
                 <div class="card-body">
                     <div class="row g-3 align-items-end">
                         <div class="col-md-3">
-                            <label for="year" class="form-label">Year</label>
+                            <label for="year" class="form-label fw-semibold">Year</label>
                             <form id="filterForm" method="GET">
                                 <select name="year" id="year" class="form-select">
                                     @for ($y = date('Y') - 5; $y <= date('Y'); $y++)
@@ -70,7 +194,7 @@
                                 </select>
                         </div>
                         <div class="col-md-3">
-                            <label for="month" class="form-label">Month</label>
+                            <label for="month" class="form-label fw-semibold">Month</label>
                             <select name="month" id="month" class="form-select">
                                 @for ($m = 1; $m <= 12; $m++)
                                     <option value="{{ $m }}" {{ (int) $month === $m ? 'selected' : '' }}>
@@ -79,8 +203,10 @@
                                 @endfor
                             </select>
                         </div>
-                        <div class="col-md-6 d-flex gap-2 justify-content-end">
-                            <button type="submit" class="btn btn-primary">Filter</button>
+                        <div class="col-md-6 d-flex gap-2 justify-content-end align-items-end">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-filter me-1"></i> Filter
+                            </button>
                             </form>
 
                             <form id="exportForm" method="POST" action="{{ route('biotime.export') }}">
@@ -90,45 +216,88 @@
                                 <input type="hidden" name="year" id="exportYear" value="{{ $year }}">
                                 <input type="hidden" name="user_ids[]" value="{{ $user->userid }}">
                                 <button type="submit" class="btn btn-success">
-                                    <i class="fas fa-file-excel me-1"></i> Export
+                                    <i class="fas fa-file-excel me-1"></i> Export Excel
                                 </button>
                             </form>
-
                         </div>
                     </div>
                 </div>
             </div>
 
+            <!-- Summary Statistics Cards -->
+            <div class="row mb-4" id="summaryCards">
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stat-card primary position-relative">
+                        <div class="stat-icon"><i class="far fa-calendar-check" style="color: #4e73df;"></i></div>
+                        <div class="stat-label">Days Worked</div>
+                        <div class="stat-value" id="statDays">0</div>
+                        <small>This month</small>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stat-card success position-relative">
+                        <div class="stat-icon"><i class="far fa-clock" style="color: #1cc88a;"></i></div>
+                        <div class="stat-label">Total Hours</div>
+                        <div class="stat-value" id="statTotalHours">00:00</div>
+                        <small>Regular + Overtime</small>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stat-card info position-relative">
+                        <div class="stat-icon"><i class="far fa-hourglass" style="color: #36b9cc;"></i></div>
+                        <div class="stat-label">Overtime Hours</div>
+                        <div class="stat-value" id="statOvertime">00:00</div>
+                        <small>Hours over 8/day</small>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stat-card warning position-relative">
+                        <div class="stat-icon"><i class="fas fa-chart-line" style="color: #f6c23e;"></i></div>
+                        <div class="stat-label">Avg Hours/Day</div>
+                        <div class="stat-value" id="statAvgHours">00:00</div>
+                        <small>Per working day</small>
+                    </div>
+                </div>
+            </div>
+
+
+
+
             <!-- Daily table -->
             <div class="row">
                 <div class="col-md-12">
                     <div class="card shadow-sm">
+                        <div class="card-header bg-light">
+                            <h5 class="mb-0"><i class="fas fa-table me-2" style="color: #61ce70;"></i>Daily Attendance Records</h5>
+                        </div>
                         <div class="card-body">
                             <div class="table-responsive">
-                                <table class="table table-bordered table-hover align-middle" id="userPunchTable">
-                                    <thead class="table-light">
+                                <table class="table table-bordered table-hover align-middle attendance-table" id="userPunchTable">
+                                    <thead>
                                         <tr>
-                                            <th>#</th>
-                                            <th>Date (MM/DD/YYYY)</th>
+                                            <th style="width:50px;">#</th>
+                                            <th>Date</th>
                                             <th>Clock In</th>
                                             <th>Clock Out</th>
-                                            <th>Total (HH:MM)</th>
-                                            <th>OT &gt; 8 hrs (HH:MM)</th>
+                                            <th>Total Hours</th>
+                                            <th>Overtime</th>
                                             <th>Status</th>
-                                            <th style="width:220px;">Actions</th>
+                                            <th style="width:180px;">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         <tr>
-                                            <td colspan="8" class="text-center text-muted">Loading…</td>
+                                            <td colspan="8" class="text-center text-muted py-4">
+                                                <i class="fas fa-spinner fa-spin me-2"></i>Loading attendance data…
+                                            </td>
                                         </tr>
                                     </tbody>
-                                    <tfoot>
+                                    <tfoot class="table-light">
                                         <tr>
-                                            <th colspan="4" class="text-end">Monthly Totals (<span
+                                            <th colspan="4" class="text-end fw-bold">Monthly Totals (<span
                                                     id="daysCount">0</span> day(s))</th>
-                                            <th id="sumHM" class="text-mono">00:00</th>
-                                            <th id="sumOTHM" class="text-mono">00:00</th>
+                                            <th id="sumHM" class="text-mono fw-bold">00:00</th>
+                                            <th id="sumOTHM" class="text-mono fw-bold">00:00</th>
                                             <th colspan="2"></th>
                                         </tr>
                                     </tfoot>
@@ -137,8 +306,14 @@
                         </div>
                     </div>
 
-                    <div class="mt-3">
-                        <a href="{{ url()->previous() }}" class="btn btn-secondary">← Back</a>
+                    <div class="mt-4 d-flex justify-content-between align-items-center">
+                        <a href="{{ url()->previous() }}" class="btn btn-outline-secondary">
+                            <i class="fas fa-arrow-left me-1"></i> Back
+                        </a>
+                        <div class="text-muted small">
+                            <i class="fas fa-info-circle me-1"></i>
+                            Showing attendance records for <strong>{{ date('F Y', mktime(0, 0, 0, $month, 1, $year)) }}</strong>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -260,53 +435,105 @@
             }
 
             // Pair IN→OUT across midnight (up to 36h)
+            // function buildSessions(punches, MAX_GAP_HOURS = 36) {
+            //     const sessions = [];
+            //     let open = null;
+
+            //     const push = (a, b) => {
+            //         if (!a || !b) return;
+            //         const mins = Math.round((b.dt - a.dt) / 60000);
+            //         if (mins > 0) sessions.push({
+            //             startDate: a.date,
+            //             startTime: a.time,
+            //             startDT: a.dt,
+            //             endDate: b.date,
+            //             endTime: b.time,
+            //             endDT: b.dt,
+            //             minutes: mins
+            //         });
+            //     };
+
+            //     for (const p of punches) {
+            //         const dir = (p.dir === 'UNK') ? (open ? 'OUT' : 'IN') : p.dir;
+            //         if (dir === 'IN') {
+            //             if (open) {
+            //                 const gap = (p.dt - open.dt) / ONE_HOUR;
+            //                 if (gap > 0 && gap <= MAX_GAP_HOURS) push(open, p);
+            //             }
+            //             open = {
+            //                 dt: p.dt,
+            //                 date: p.date,
+            //                 time: p.time
+            //             };
+            //         } else { // OUT
+            //             if (open) {
+            //                 const gap = (p.dt - open.dt) / ONE_HOUR;
+            //                 if (gap > 0 && gap <= MAX_GAP_HOURS) {
+            //                     push(open, p);
+            //                     open = null;
+            //                 } else {
+            //                     open = null;
+            //                 }
+            //             }
+            //         }
+            //     }
+            //     return {
+            //         sessions,
+            //         openStart: open
+            //     };
+            // }
+
+            // Pair IN→OUT, stop if another IN appears first (don't jump over IN)
             function buildSessions(punches, MAX_GAP_HOURS = 36) {
+                const ONE_HOUR = 3600000;
                 const sessions = [];
                 let open = null;
 
                 const push = (a, b) => {
                     if (!a || !b) return;
                     const mins = Math.round((b.dt - a.dt) / 60000);
-                    if (mins > 0) sessions.push({
-                        startDate: a.date,
-                        startTime: a.time,
-                        startDT: a.dt,
-                        endDate: b.date,
-                        endTime: b.time,
-                        endDT: b.dt,
-                        minutes: mins
-                    });
+                    if (mins > 0) {
+                        sessions.push({
+                            startDate: a.date,
+                            startTime: a.time,
+                            startDT: a.dt,
+                            endDate: b.date,
+                            endTime: b.time,
+                            endDT: b.dt,
+                            minutes: mins
+                        });
+                    }
                 };
 
                 for (const p of punches) {
                     const dir = (p.dir === 'UNK') ? (open ? 'OUT' : 'IN') : p.dir;
+
                     if (dir === 'IN') {
-                        if (open) {
-                            const gap = (p.dt - open.dt) / ONE_HOUR;
-                            if (gap > 0 && gap <= MAX_GAP_HOURS) push(open, p);
-                        }
+                        // New IN replaces any open IN (abandon orphan)
                         open = {
                             dt: p.dt,
                             date: p.date,
                             time: p.time
                         };
-                    } else { // OUT
-                        if (open) {
-                            const gap = (p.dt - open.dt) / ONE_HOUR;
-                            if (gap > 0 && gap <= MAX_GAP_HOURS) {
-                                push(open, p);
-                                open = null;
-                            } else {
-                                open = null;
-                            }
+                        continue;
+                    }
+
+                    if (dir === 'OUT') {
+                        if (!open) continue;
+                        const gapH = (p.dt - open.dt) / ONE_HOUR;
+                        if (gapH > 0 && gapH <= MAX_GAP_HOURS) {
+                            push(open, p);
                         }
+                        open = null; // close regardless
                     }
                 }
+
                 return {
                     sessions,
                     openStart: open
                 };
             }
+
 
             // Aggregate per start-day, handle open sessions
             function sessionsToDaily({
@@ -400,13 +627,69 @@
             const punches = normalize(RAW);
             const daily = sessionsToDaily(buildSessions(punches, 36));
 
+            // Calculate statistics and patterns
             const $tb = $('#userPunchTable tbody').empty();
             let sum = 0,
                 sumOT = 0,
-                days = 0;
+                days = 0,
+                incompleteDays = 0;
+            
+            // Calculate shift patterns from actual data (shift-agnostic approach)
+            const clockInTimes = [];
+            const clockOutTimes = [];
+            const workDurations = [];
+            
+            // Calculate average shift times from actual data
+            daily.forEach(r => {
+                if (r.in) {
+                    const [h, m] = r.in.split(':').map(Number);
+                    clockInTimes.push(h * 60 + m); // minutes from midnight
+                }
+                if (r.out) {
+                    const [h, m] = r.out.split(':').map(Number);
+                    clockOutTimes.push(h * 60 + m);
+                }
+                if (r.totalMin > 0) {
+                    workDurations.push(r.totalMin);
+                }
+            });
+            
+            // Calculate averages - make accessible globally
+            window.avgClockIn = clockInTimes.length > 0 
+                ? Math.round(clockInTimes.reduce((a, b) => a + b, 0) / clockInTimes.length)
+                : null;
+            window.avgClockOut = clockOutTimes.length > 0
+                ? Math.round(clockOutTimes.reduce((a, b) => a + b, 0) / clockOutTimes.length)
+                : null;
+            window.avgWorkDuration = workDurations.length > 0
+                ? Math.round(workDurations.reduce((a, b) => a + b, 0) / workDurations.length)
+                : null;
+            
+            const avgClockIn = window.avgClockIn;
+            const avgClockOut = window.avgClockOut;
+            const avgWorkDuration = window.avgWorkDuration;
+            
+            // Calculate standard deviation for consistency
+            const calcStdDev = (arr, avg) => {
+                if (!arr.length || !avg) return 0;
+                const variance = arr.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / arr.length;
+                return Math.round(Math.sqrt(variance));
+            };
+            
+            const clockInStdDev = calcStdDev(clockInTimes, avgClockIn);
+            const clockOutStdDev = calcStdDev(clockOutTimes, avgClockOut);
+            
+            // Detect patterns: late/early relative to their own average (not fixed times)
+            let lateArrivals = 0;
+            let earlyDepartures = 0;
+            let onTimeDays = 0;
+            window.LATE_THRESHOLD = 30; // 30 minutes after average
+            window.EARLY_THRESHOLD = 30; // 30 minutes before average
+            const LATE_THRESHOLD = window.LATE_THRESHOLD;
+            const EARLY_THRESHOLD = window.EARLY_THRESHOLD;
 
             if (!daily.length) {
-                $tb.append('<tr><td colspan="8" class="text-center text-muted">No records for this period.</td></tr>');
+                $tb.append('<tr><td colspan="8" class="text-center text-muted py-4">No records for this period.</td></tr>');
             } else {
                 daily.forEach((r, i) => {
                     const count = (r.status === 'OK' || r.status === 'Still In') && r.totalMin > 0;
@@ -416,22 +699,71 @@
                         days++;
                     }
 
+                    // Check for late arrivals and early departures relative to their own average
+                    let timeClass = '';
+                    let patternBadge = '';
+                    let isLate = false;
+                    let isEarly = false;
+                    
+                    if (r.in && avgClockIn) {
+                        const [h, m] = r.in.split(':').map(Number);
+                        const inMinutes = h * 60 + m;
+                        // Late if more than 30 minutes after their average clock-in time
+                        if (inMinutes > avgClockIn + LATE_THRESHOLD) {
+                            lateArrivals++;
+                            isLate = true;
+                            timeClass = 'late-arrival';
+                            patternBadge = '<span class="pattern-badge bg-danger text-white ms-2">Late</span>';
+                        }
+                    }
+
+                    if (r.out && avgClockOut) {
+                        const [h, m] = r.out.split(':').map(Number);
+                        const outMinutes = h * 60 + m;
+                        // Early if more than 30 minutes before their average clock-out time
+                        if (outMinutes < avgClockOut - EARLY_THRESHOLD && r.totalMin > 0) {
+                            earlyDepartures++;
+                            isEarly = true;
+                            if (!timeClass) timeClass = 'early-departure';
+                            patternBadge = '<span class="pattern-badge bg-warning text-dark ms-2">Early</span>';
+                        }
+                    }
+
+                    // Count on-time days (within 15 minutes of average)
+                    if (r.status === 'OK' && r.in && r.out && !isLate && !isEarly) {
+                        if (avgClockIn && avgClockOut) {
+                            const [hIn, mIn] = r.in.split(':').map(Number);
+                            const [hOut, mOut] = r.out.split(':').map(Number);
+                            const inMinutes = hIn * 60 + mIn;
+                            const outMinutes = hOut * 60 + mOut;
+                            if (Math.abs(inMinutes - avgClockIn) <= 15 && Math.abs(outMinutes - avgClockOut) <= 15) {
+                                onTimeDays++;
+                            }
+                        } else {
+                            onTimeDays++;
+                        }
+                    }
+
+                    if (r.status === 'Incomplete') {
+                        incompleteDays++;
+                    }
+
                     $tb.append(`
                         <tr data-date="${r.date}">
                             <td>${i + 1}</td>
                             <td>${usDate(r.date)}</td>
-                            <td class="text-mono">${r.in ? usTime(r.in) : ''}</td>
-                            <td class="text-mono">${r.out ? usTime(r.out) : ''}</td>
-                            <td class="text-mono">${count ? r.totalHM : ''}</td>
-                            <td class="text-mono">${count ? r.otHM : ''}</td>
+                            <td class="text-mono ${timeClass}">${r.in ? usTime(r.in) : '<span class="text-muted">—</span>'}</td>
+                            <td class="text-mono ${timeClass}">${r.out ? usTime(r.out) : '<span class="text-muted">—</span>'}</td>
+                            <td class="text-mono fw-semibold">${count ? r.totalHM : '<span class="text-muted">—</span>'}</td>
+                            <td class="text-mono">${count ? r.otHM : '<span class="text-muted">—</span>'}</td>
                             <td>${badge(r.status)}</td>
                             <td>
-                                <div class="btn-group">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary btn-expand">
-                                        <i class="fas fa-chevron-down me-1"></i>Expand
+                                <div class="btn-group btn-group-sm">
+                                    <button type="button" class="btn btn-outline-secondary btn-expand" title="Expand details">
+                                        <i class="fas fa-chevron-down"></i>
                                     </button>
-                                    <button type="button" class="btn btn-sm btn-outline-primary btn-view">
-                                        <i class="fas fa-eye me-1"></i>View
+                                    <button type="button" class="btn btn-outline-primary btn-view" title="View all transactions">
+                                        <i class="fas fa-eye"></i>
                                     </button>
                                 </div>
                             </td>
@@ -440,9 +772,21 @@
                 });
             }
 
+            // Update summary statistics
             $('#daysCount').text(days);
             $('#sumHM').text(toHM(sum));
             $('#sumOTHM').text(toHM(sumOT));
+
+            // Update stat cards
+            $('#statDays').text(days);
+            $('#statTotalHours').text(toHM(sum));
+            $('#statOvertime').text(toHM(sumOT));
+            $('#statAvgHours').text(days > 0 ? toHM(Math.round(sum / days)) : '00:00');
+
+
+
+
+
 
             // Expand inline (US date/time + Clock labels)
             function childHtml(date) {
@@ -453,26 +797,32 @@
                         <thead class="table-light"><tr><th>Date</th><th>Time</th><th>Direction</th></tr></thead>
                         <tbody>${
                             arr.map(r => `
-                                            <tr>
-                                                <td>${usDate(r.punch_date)}</td>
-                                                <td class="text-mono">${usTime(r.punch_time)}</td>
-                                                <td>${r.direction}</td>
-                                            </tr>
-                                        `).join('')
+                                                <tr>
+                                                    <td>${usDate(r.punch_date)}</td>
+                                                    <td class="text-mono">${usTime(r.punch_time)}</td>
+                                                    <td>${r.direction}</td>
+                                                </tr>
+                                            `).join('')
                         }</tbody>
                     </table>
                 </div></div>`;
             }
 
             $(document).on('click', '.btn-expand', function() {
-                const $tr = $(this).closest('tr'),
-                    date = $tr.data('date'),
-                    $next = $tr.next('.child-row');
+                const $btn = $(this);
+                const $tr = $btn.closest('tr');
+                const date = $tr.data('date');
+                const $next = $tr.next('.child-row');
+                
                 if ($next.length) {
                     $next.remove();
-                    return;
+                    $btn.html('<i class="fas fa-chevron-down"></i>');
+                    $btn.attr('title', 'Expand details');
+                } else {
+                    $('<tr class="child-row"><td colspan="8">' + childHtml(date) + '</td></tr>').insertAfter($tr);
+                    $btn.html('<i class="fas fa-chevron-up"></i>');
+                    $btn.attr('title', 'Collapse details');
                 }
-                $('<tr class="child-row"><td colspan="8">' + childHtml(date) + '</td></tr>').insertAfter($tr);
             });
 
             // Modal (all transactions for a day) with US formatting

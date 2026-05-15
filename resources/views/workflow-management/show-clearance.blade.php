@@ -75,6 +75,15 @@
         <div class="card shadow-sm mb-4">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">Workflow Information</h5>
+                @if(Auth::user()->can('manage workflows'))
+                    <form action="{{ route('workflow-management.destroy-clearance', $workflow->id) }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this clearance workflow? This will also delete all associated workflow history. This action cannot be undone.');">
+                        @csrf
+                        @method('DELETE')
+                        <button type="submit" class="btn btn-danger btn-sm">
+                            <i class="fas fa-trash me-1"></i> Delete Workflow
+                        </button>
+                    </form>
+                @endif
             </div>
             <div class="card-body">
                 <div class="row">
@@ -320,10 +329,51 @@
                                         @endif
                                     </td>
                                     <td>
-                                        @if($history->status == 0 && ($hasError || Auth::user()->can('manage workflows')))
-                                            <a href="{{ route('workflow-management.edit-clearance-history', $history->id) }}" class="btn btn-sm btn-warning" title="Edit/Reassign">
-                                                <i class="fas fa-edit"></i>
-                                            </a>
+                                        @if(Auth::user()->can('manage workflows'))
+                                            <div class="btn-group" role="group">
+                                                @if($history->status == 0 && ($hasError || Auth::user()->can('manage workflows')))
+                                                    <a href="{{ route('workflow-management.edit-clearance-history', $history->id) }}" class="btn btn-sm btn-warning" title="Edit/Reassign">
+                                                        <i class="fas fa-edit"></i>
+                                                    </a>
+                                                @endif
+                                                <button type="button" class="btn btn-sm btn-info" data-bs-toggle="modal" data-bs-target="#statusModal{{ $history->id }}" title="Change Status">
+                                                    <i class="fas fa-exchange-alt"></i>
+                                                </button>
+                                            </div>
+                                            
+                                            <!-- Status Change Modal -->
+                                            <div class="modal fade" id="statusModal{{ $history->id }}" tabindex="-1" aria-labelledby="statusModalLabel{{ $history->id }}" aria-hidden="true">
+                                                <div class="modal-dialog">
+                                                    <div class="modal-content">
+                                                        <div class="modal-header">
+                                                            <h5 class="modal-title" id="statusModalLabel{{ $history->id }}">Change Status - {{ $history->step_name ?? 'N/A' }}</h5>
+                                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                        </div>
+                                                        <form action="{{ route('workflow-management.update-clearance-history-status', $history->id) }}" method="POST">
+                                                            @csrf
+                                                            @method('PUT')
+                                                            <div class="modal-body">
+                                                                <div class="mb-3">
+                                                                    <label class="form-label"><strong>Status</strong></label>
+                                                                    <select name="status" class="form-select" required>
+                                                                        <option value="0" {{ $history->status == 0 ? 'selected' : '' }}>Pending</option>
+                                                                        <option value="1" {{ $history->status == 1 ? 'selected' : '' }}>Approved</option>
+                                                                        <option value="2" {{ $history->status == 2 ? 'selected' : '' }}>Rejected</option>
+                                                                    </select>
+                                                                </div>
+                                                                <div class="mb-3">
+                                                                    <label class="form-label"><strong>Remark (Optional)</strong></label>
+                                                                    <textarea name="remark" class="form-control" rows="3" placeholder="Add a remark about this status change...">{{ $history->remark }}</textarea>
+                                                                </div>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                                <button type="submit" class="btn btn-primary">Update Status</button>
+                                                            </div>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         @endif
                                     </td>
                                 </tr>

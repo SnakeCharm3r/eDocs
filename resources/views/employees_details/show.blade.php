@@ -2,848 +2,562 @@
 
 @section('breadcrumb')
     @include('sweetalert::alert')
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+    <link rel="stylesheet" href="{{ asset('assets/plugins/sweetalert/sweetalert2.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('assets/plugins/fontawesome/css/all.min.css') }}">
+    <style>
+        .profile-hero { background: #fff; border-radius: 10px; border: 1px solid #e9ecef; }
+        .profile-avatar-wrap { position: relative; display: inline-block; }
+        .profile-avatar { width: 110px; height: 110px; object-fit: cover; border-radius: 50%; border: 3px solid #e9ecef; }
+        .avatar-placeholder { width: 110px; height: 110px; border-radius: 50%; background: #e9ecef; display: flex; align-items: center; justify-content: center; border: 3px solid #dee2e6; }
+        .avatar-placeholder i { font-size: 2.5rem; color: #adb5bd; }
+        .avatar-download { position: absolute; bottom: 2px; right: 2px; background: #0d6efd; color: #fff; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; font-size: .7rem; text-decoration: none; }
+        .status-badge { font-size: .75rem; padding: .3em .75em; border-radius: 20px; font-weight: 600; text-transform: capitalize; }
+        .info-label { color: #6c757d; font-size: .78rem; margin-bottom: 1px; }
+        .info-value { font-weight: 500; font-size: .92rem; color: #212529; }
+        .section-card { border-radius: 8px; border: 1px solid #e9ecef; margin-bottom: 1.25rem; }
+        .section-card .card-header { background: #f8f9fa; border-bottom: 1px solid #e9ecef; padding: .65rem 1rem; border-radius: 8px 8px 0 0; }
+        .section-card .card-header h6 { font-size: .85rem; font-weight: 600; color: #495057; margin: 0; }
+        .doc-item { display: flex; align-items: center; gap: .6rem; padding: .5rem 0; border-bottom: 1px solid #f0f0f0; }
+        .doc-item:last-child { border-bottom: none; }
+        .doc-item i { color: #6c757d; font-size: .9rem; width: 18px; text-align: center; }
+        .doc-item a { font-size: .85rem; }
+        .kv-row { display: flex; gap: .5rem; margin-bottom: .75rem; }
+        .kv-row:last-child { margin-bottom: 0; }
+        .edu-badge { display: inline-flex; align-items: center; gap: .4rem; font-size: .82rem; padding: .35rem .7rem; border-radius: 6px; background: #f8f9fa; border: 1px solid #dee2e6; color: #212529; text-decoration: none; }
+        .edu-badge:hover { background: #e9ecef; color: #212529; }
+        .edu-badge i { color: #6c757d; }
+        .policy-card { border: 1px solid #dee2e6; border-radius: 6px; transition: border-color .15s; }
+        .policy-card:hover { border-color: #adb5bd; }
+        .completion-item { padding: .5rem 0; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; }
+        .completion-item:last-child { border-bottom: none; }
+    </style>
 @endsection
 
 @section('content')
-    <div class="page-wrapper">
-        <div class="content container-fluid">
-            <div class="page-header">
-                <div class="row">
-                    <div class="col-sm-12">
-                        <div class="page-sub-header d-flex justify-content-between align-items-center">
-                            <h3 class="page-title mb-0">
-                                <i class="fas fa-user-circle me-2"></i>Employee Profile
-                            </h3>
-                            <a href="{{ route('employee.index') }}" class="btn btn-secondary">
-                                <i class="fas fa-arrow-left me-2"></i>Back to Staff List
-                            </a>
-                        </div>
-                    </div>
-                </div>
+<div class="page-wrapper">
+    <div class="content container-fluid">
+
+        {{-- Flash message --}}
+        @if (session('success'))
+            <div class="alert alert-success alert-dismissible fade show" id="successMsg" role="alert">
+                {{ session('success') }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
-            <link href="https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css" rel="stylesheet">
-            <div class="container">
-                <div class="row flex-lg-nowrap">
-                    <div class="col">
-                        <div class="card">
-                            <div class="card-body">
-                                <div class="e-profile">
-                                    <div class="row">
-                                        <!-- Success Message -->
-                                        @if (session('success'))
-                                            <div class="alert alert-success" id="successMessage">
-                                                {{ session('success') }}
-                                            </div>
+            <script>setTimeout(()=>document.getElementById('successMsg')?.remove(), 3000);</script>
+        @endif
 
-                                            <script>
-                                                setTimeout(function() {
-                                                    var successMessage = document.getElementById('successMessage');
-                                                    if (successMessage) {
-                                                        successMessage.style.display = 'none';
-                                                    }
-                                                }, 3000); // 3000 milliseconds = 3 seconds
-                                            </script>
-                                        @endif
-
-                                        <div class="col-12 col-sm-auto mb-3">
-                                            <div class="mx-auto" style="width: 140px;">
-                                                <div class="d-flex justify-content-center align-items-center rounded"
-                                                    style="height: 140px; background-color: rgb(233, 236, 239); position: relative;">
-                                                    @if ($user->profile_picture)
-                                                        <img src="{{ asset('storage/' . $user->profile_picture) }}"
-                                                            alt="Profile Picture" class="img-fluid rounded-circle"
-                                                            style="max-width: 140px; height: 140px; padding: 5px; object-fit: cover;">
-                                                        <a href="{{ asset('storage/' . $user->profile_picture) }}" download
-                                                            class="btn btn-primary"
-                                                            style="position: absolute; bottom: 10px; right: 10px; padding: 5px 10px;">
-                                                            <i class="fa fa-download"></i>
-                                                        </a>
-                                                    @else
-                                                        <img src="{{ asset('assets/img/icon.png') }}"
-                                                            alt="Default User Icon" class="img-fluid rounded-circle"
-                                                            style="max-width: 140px; height: 140px; padding: 1px; object-fit: cover;">
-                                                    @endif
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="col d-flex flex-column flex-sm-row justify-content-between mb-3">
-                                            <div class="text-center text-sm-left mb-2 mb-sm-0">
-                                                <h4 class="pt-sm-2 pb-1 mb-0 text-nowrap">{{ $user->fname }}
-                                                    {{ $user->mname }} {{ $user->lname }}</h4>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <ul class="nav nav-tabs">
-                                        <li class="nav-item"><a href="#" class="active nav-link">User Info</a></li>
-                                    </ul>
-                                    <br>
-                                    <div class="row">
-                                        <div class="col">
-                                            <div class="table-responsive">
-                                                <table class="table table-bordered">
-                                                    <thead>
-                                                        <tr>
-                                                            <th>Department</th>
-                                                            <th>Job Title</th>
-                                                            <th>CCBRT Code</th>
-                                                            <th>Professional Reg Number</th>
-                                                            <th>NSSF No</th>
-                                                            <th>Actions</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        <tr>
-                                                            <td>{{ optional($user->department)->dept_name ?? 'N/A' }}</td>
-                                                            <td>{{ optional($user->jobTitle)->job_title ?? 'N/A' }}</td>
-                                                            <td>{{ $user->ccbrt_code ?? 'N/A' }}</td>
-                                                            <td>{{ $user->professional_reg_number ?? 'N/A' }}</td>
-                                                            <td>{{ $user->nssf_no ?? 'N/A' }}</td>
-                                                            <td>
-                                                                <form action="{{ route('user.edit', $user->id) }}"
-                                                                    method="get" id="editForm{{ $user->id }}">
-                                                                    @csrf
-                                                                    <button type="submit" class="btn btn-sm btn-primary">
-                                                                        <i class="fas fa-edit"></i> Edit
-                                                                    </button>
-                                                                </form>
-                                                            </td>
-                                                        </tr>
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <br>
-                                    
-                                    {{-- Profile Completion Section for HR --}}
-                                    @role('super-admin|admin|hr')
-                                    @if($user->status === 'inactive' || ($user->status === 'pending' && $existingWorkflow))
-                                    <div class="row mb-4">
-                                        <div class="col-12">
-                                            <div class="card border-primary">
-                                                <div class="card-header bg-primary text-white">
-                                                    <h5 class="mb-0">
-                                                        <i class="fas fa-clipboard-check me-2"></i>Profile Completion Status
-                                                    </h5>
-                                                </div>
-                                                <div class="card-body">
-                                                    <div class="row">
-                                                        <div class="col-md-6">
-                                                            <h6 class="mb-3">Required Profile Details:</h6>
-                                                            <ul class="list-group list-group-flush">
-                                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                                    <span>
-                                                                        <i class="fas {{ $hasPersonalDetails ? 'fa-check-circle text-success' : 'fa-times-circle text-danger' }} me-2"></i>
-                                                                        Personal Details
-                                                                    </span>
-                                                                    @if($hasPersonalDetails)
-                                                                        <span class="badge bg-success">Completed</span>
-                                                                    @else
-                                                                        <a href="{{ route('hr.employee.personal-details', $user->id) }}" class="btn btn-sm btn-outline-primary">
-                                                                            <i class="fas fa-edit me-1"></i>Fill
-                                                                        </a>
-                                                                    @endif
-                                                                </li>
-                                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                                    <span>
-                                                                        <i class="fas {{ $hasFamilyDetails ? 'fa-check-circle text-success' : 'fa-times-circle text-danger' }} me-2"></i>
-                                                                        Family Details
-                                                                    </span>
-                                                                    @if($hasFamilyDetails)
-                                                                        <span class="badge bg-success">Completed</span>
-                                                                    @else
-                                                                        <a href="{{ route('hr.employee.family-details', $user->id) }}" class="btn btn-sm btn-outline-primary">
-                                                                            <i class="fas fa-edit me-1"></i>Fill
-                                                                        </a>
-                                                                    @endif
-                                                                </li>
-                                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                                    <span>
-                                                                        <i class="fas {{ $hasHealthDetails ? 'fa-check-circle text-success' : 'fa-times-circle text-danger' }} me-2"></i>
-                                                                        Health Details
-                                                                    </span>
-                                                                    @if($hasHealthDetails)
-                                                                        <span class="badge bg-success">Completed</span>
-                                                                    @else
-                                                                        <a href="{{ route('hr.employee.health-details', $user->id) }}" class="btn btn-sm btn-outline-primary">
-                                                                            <i class="fas fa-edit me-1"></i>Fill
-                                                                        </a>
-                                                                    @endif
-                                                                </li>
-                                                            </ul>
-                                                        </div>
-                                                        <div class="col-md-6">
-                                                            <h6 class="mb-3">&nbsp;</h6>
-                                                            <ul class="list-group list-group-flush">
-                                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                                    <span>
-                                                                        <i class="fas {{ $hasLanguageKnowledge ? 'fa-check-circle text-success' : 'fa-times-circle text-danger' }} me-2"></i>
-                                                                        Language Knowledge
-                                                                    </span>
-                                                                    @if($hasLanguageKnowledge)
-                                                                        <span class="badge bg-success">Completed</span>
-                                                                    @else
-                                                                        <a href="{{ route('hr.employee.language-knowledge', $user->id) }}" class="btn btn-sm btn-outline-primary">
-                                                                            <i class="fas fa-edit me-1"></i>Fill
-                                                                        </a>
-                                                                    @endif
-                                                                </li>
-                                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                                    <span>
-                                                                        <i class="fas {{ $hasCcbrtRelation ? 'fa-check-circle text-success' : 'fa-circle text-muted' }} me-2"></i>
-                                                                        CCBRT Relation <span class="text-muted small">(Optional)</span>
-                                                                    </span>
-                                                                    @if($hasCcbrtRelation)
-                                                                        <span class="badge bg-success">Completed</span>
-                                                                    @else
-                                                                        <a href="{{ route('hr.employee.ccbrt-relation', $user->id) }}" class="btn btn-sm btn-outline-secondary">
-                                                                            <i class="fas fa-edit me-1"></i>Fill
-                                                                        </a>
-                                                                    @endif
-                                                                </li>
-                                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                                    <span>
-                                                                        <i class="fas {{ $hasConflictInterest ? 'fa-check-circle text-success' : 'fa-times-circle text-danger' }} me-2"></i>
-                                                                        Conflict of Interest
-                                                                    </span>
-                                                                    @if($hasConflictInterest)
-                                                                        <span class="badge bg-success">Completed</span>
-                                                                    @else
-                                                                        <a href="{{ route('hr.employee.conflict-interest', $user->id) }}" class="btn btn-sm btn-outline-primary">
-                                                                            <i class="fas fa-edit me-1"></i>Fill
-                                                                        </a>
-                                                                    @endif
-                                                                </li>
-                                                            </ul>
-                                                        </div>
-                                                    </div>
-                                                    
-                                                    <div class="row mt-4">
-                                                        <div class="col-12">
-                                                            <div class="alert {{ $profileComplete ? 'alert-success' : 'alert-warning' }}" role="alert">
-                                                                <div class="d-flex justify-content-between align-items-center">
-                                                                    <div>
-                                                                        <i class="fas {{ $profileComplete ? 'fa-check-circle' : 'fa-exclamation-triangle' }} me-2"></i>
-                                                                        <strong>
-                                                                            @if($profileComplete)
-                                                                                All profile details are completed!
-                                                                            @else
-                                                                                Please complete all profile details before submitting for approval.
-                                                                            @endif
-                                                                        </strong>
-                                                                    </div>
-                                                                    @if($existingWorkflow)
-                                                                        <span class="badge bg-info">
-                                                                            <i class="fas fa-clock me-1"></i>Pending Approval
-                                                                        </span>
-                                                                    @else
-                                                                        <div class="alert alert-info mb-0">
-                                                                            <i class="fas fa-info-circle me-2"></i>
-                                                                            <strong>Note:</strong> This staff member needs to login and complete their signature to submit for HR approval.
-                                                                        </div>
-                                                                    @endif
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    @endif
-                                    @endrole
-                                    
-                                    <div class="row">
-                                        <!-- Left Column: Account Information -->
-                                        <div class="col-md-6">
-                                            <table class="table table-bordered">
-                                                <tbody>
-                                                    <tr>
-                                                        <th colspan="2" class="text-center">Account Information</th>
-                                                    </tr>
-
-                                                    <tr>
-                                                        <th scope="row">Joined Date</th>
-                                                        <td>{{ \Carbon\Carbon::parse($user->created_at)->format('d F, Y') }}
-                                                        </td>
-                                                    </tr>
-
-                                                    <tr>
-                                                        <th scope="row">Status</th>
-                                                        <td>
-                                                            <div class="row">
-                                                                <div class="col-8">
-                                                                    @if ($user->status === 'active')
-                                                                        Active
-                                                                    @elseif ($user->status === 'inactive')
-                                                                        Inactive
-                                                                    @elseif ($user->status === 'Pending')
-                                                                        Pending
-                                                                    @elseif ($user->status === 'deactivated')
-                                                                        Deactivated
-                                                                    @else
-                                                                        Unknown
-                                                                    @endif
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-
-                                                    <!-- Action Column -->
-                                                    <tr>
-                                                        <th scope="row">Action</th>
-                                                        <td>
-                                                            @if ($user->status === 'active')
-                                                                <!-- Deactivate User Button -->
-                                                                <form action="{{ route('auth.deactivate', $user->id) }}"
-                                                                    method="POST"
-                                                                    id="deactivateForm{{ $user->id }}"
-                                                                    style="display:inline-block;">
-                                                                    @csrf
-                                                                    @method('PUT')
-                                                                    <button type="button"
-                                                                        class="btn btn-warning btn-sm"
-                                                                        onclick="confirmDeactivate({{ $user->id }})">
-                                                                        <i class="fas fa-user-slash me-1"></i>Deactivate User
-                                                                    </button>
-                                                                </form>
-                                                            @elseif ($user->status === 'inactive' || $user->status === 'deactivated')
-                                                                <!-- Activate User Button -->
-                                                                <form action="{{ route('auth.activate', $user->id) }}"
-                                                                    method="POST"
-                                                                    onsubmit="return confirm('Are you sure you want to activate this user?');"
-                                                                    style="display:inline-block;">
-                                                                    @csrf
-                                                                    @method('PUT')
-                                                                    <button type="submit"
-                                                                        class="btn btn-success btn-sm">Activate
-                                                                        User</button>
-                                                                </form>
-                                                            @endif
-
-                                                            <!-- Delete User Button (only for inactive users) -->
-                                                            @if ($user->status === 'inactive')
-                                                                <form action="{{ route('auth.destroy', $user->id) }}"
-                                                                    method="POST"
-                                                                    onsubmit="return confirm('Are you sure you want to delete this user? This action cannot be undone.');"
-                                                                    style="display:inline-block;">
-                                                                    @csrf
-                                                                    @method('DELETE')
-                                                                    <button type="submit"
-                                                                        class="btn btn-danger btn-sm">Delete User</button>
-                                                                </form>
-                                                            @endif
-                                                        </td>
-
-
-                                                    </tr>
-                                                </tbody>
-                                            </table>
-                                        </div>
-
-                                        <div class="col-md-6">
-                                            <table class="table table-bordered">
-                                                <thead>
-                                                    <tr>
-                                                        <th colspan="2" class="text-center">User Attachments</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    <!-- CV -->
-                                                    @if ($user->employee_cv)
-                                                        <tr>
-                                                            <th scope="row">Curriculum Vitae (CV)</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->employee_cv) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                    @if ($user->marital_status == 'married' && $user->marriage_certificate)
-                                                        <!-- Marriage Certificate -->
-                                                        <tr>
-                                                            <th scope="row">Marriage Certificate</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->marriage_certificate) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @elseif($user->marital_status == 'divorced' && $user->divorce_certificate)
-                                                        <!-- Divorce Certificate -->
-                                                        <tr>
-                                                            <th scope="row">Divorce Certificate</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->divorce_certificate) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                    @if ($user->nida)
-                                                        <tr>
-                                                            <th scope="row">NIDA</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->nida) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                    @if ($user->driving_license)
-                                                        <tr>
-                                                            <th scope="row">Driving License</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->driving_license) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                    @if ($user->transport_id)
-                                                        <tr>
-                                                            <th scope="row">Transport ID License</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->transport_id) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                    @if ($user->voting_id)
-                                                        <tr>
-                                                            <th scope="row">Voting ID</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->voting_id) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                    @if ($user->other_document)
-                                                        <tr>
-                                                            <th scope="row">Other Docs</th>
-                                                            <td>
-                                                                <a href="{{ asset('storage/' . $user->other_document) }}"
-                                                                    target="_blank" class="btn btn-info btn-sm">View</a>
-
-                                                            </td>
-                                                        </tr>
-                                                    @endif
-
-                                                </tbody>
-                                            </table>
-                                        </div>
-
-
-                                    </div>
-                                </div>
-                                <table class="table mt-4" id="education-level-documents">
-                                    <thead>
-                                        <tr>
-                                            <!-- Display Form 4 & Form 6 Column only if documents exist -->
-                                            @if ($user->form_4_certificate || $user->form_6_certificate)
-                                                <th>Form 4 & Form 6</th>
-                                            @endif
-
-                                            <!-- Display Diploma, Degree & Master's Column only if documents exist -->
-                                            @if ($user->diploma_certificate || $user->bachelor_certificate || $user->masters_certificate)
-                                                <th>Diploma, Degree & Master's</th>
-                                            @endif
-
-                                            <!-- Display PhD Column only if documents exist -->
-                                            @if ($user->phd_certificate)
-                                                <th>PhD</th>
-                                            @endif
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr>
-                                            <!-- Form 4 and Form 6 documents -->
-                                            @if ($user->form_4_certificate || $user->form_6_certificate)
-                                                <td>
-                                                    @if ($user->form_4_certificate)
-                                                        <div>
-                                                            <strong>Form 4</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->form_4_certificate) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->form_6_certificate)
-                                                        <div>
-                                                            <strong>Form 6</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->form_6_certificate) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-                                                </td>
-                                            @endif
-
-                                            <!-- Diploma, Degree & Master's documents -->
-                                            @if ($user->diploma_certificate || $user->bachelor_certificate || $user->masters_certificate)
-                                                <td>
-                                                    @if ($user->diploma_certificate)
-                                                        <div>
-                                                            <strong>Diploma Certificate</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->diploma_certificate) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->diploma_transcript)
-                                                        <div>
-                                                            <strong>Diploma Transcript</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->diploma_transcript) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->bachelor_certificate)
-                                                        <div>
-                                                            <strong>Bachelor's Degree</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->bachelor_certificate) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->bachelor_transcript)
-                                                        <div>
-                                                            <strong>Bachelor Transcript</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->bachelor_transcript) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->masters_certificate)
-                                                        <div>
-                                                            <strong>Master's Degree</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->masters_certificate) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->masters_transcript)
-                                                        <div>
-                                                            <strong>Master's Transcript</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->masters_transcript) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-                                                </td>
-                                            @endif
-
-                                            <!-- PhD documents -->
-                                            @if ($user->phd_certificate)
-                                                <td>
-                                                    @if ($user->phd_certificate)
-                                                        <div>
-                                                            <strong>PhD Certificate</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->phd_certificate) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-
-                                                    @if ($user->phd_transcript)
-                                                        <div>
-                                                            <strong>PhD Transcript</strong><br>
-                                                            <a href="{{ asset('storage/' . $user->phd_transcript) }}"
-                                                                target="_blank" class="btn btn-info btn-sm">
-                                                                <i class="fas fa-eye mr-2"></i>
-                                                                <!-- Eye icon with right margin -->
-                                                            </a>
-                                                        </div>
-                                                    @endif
-                                                </td>
-                                            @endif
-                                        </tr>
-                                    </tbody>
-                                </table>
-
-
-
-                                {{-- CCBRT Policies Section --}}
-                                <div class="row mt-4">
-                                    <div class="col-md-12">
-                                        <div class="card shadow-sm">
-                                            <div class="card-header bg-primary text-white">
-                                                <h5 class="mb-0">
-                                                    <i class="fas fa-file-contract me-2"></i>CCBRT Policies
-                                                </h5>
-                                            </div>
-                                            <div class="card-body">
-                                                @if ($policies->isEmpty())
-                                                    <div class="alert alert-info">
-                                                        <i class="fas fa-info-circle me-2"></i>No policies available.
-                                                    </div>
-                                                @else
-                                                    {{-- Policy Selection Interface --}}
-                                                    <div class="mb-4">
-                                                        <div class="d-flex justify-content-between align-items-center mb-3">
-                                                            <h6 class="mb-0">
-                                                                <i class="fas fa-list-check me-2"></i>Select Policies to Download
-                                                            </h6>
-                                                            <div>
-                                                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="selectAllPolicies()">
-                                                                    <i class="fas fa-check-square me-1"></i>Select All
-                                                                </button>
-                                                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="deselectAllPolicies()">
-                                                                    <i class="fas fa-square me-1"></i>Deselect All
-                                                                </button>
-                                                            </div>
-                                                        </div>
-
-                                                        <div class="row g-3" id="policy-selection">
-                                                            @foreach ($policies as $policy)
-                                                                <div class="col-md-6">
-                                                                    <div class="card border policy-card h-100">
-                                                                        <div class="card-body">
-                                                                            <div class="form-check">
-                                                                                <input class="form-check-input policy-checkbox" 
-                                                                                    type="checkbox" 
-                                                                                    value="{{ $policy->id }}" 
-                                                                                    id="policy-{{ $policy->id }}"
-                                                                                    data-title="{{ $policy->title }}">
-                                                                                <label class="form-check-label w-100" for="policy-{{ $policy->id }}">
-                                                                                    <div class="d-flex align-items-start">
-                                                                                        <i class="fas fa-file-alt text-primary me-2 mt-1"></i>
-                                                                                        <div class="flex-grow-1">
-                                                                                            <h6 class="mb-1 fw-bold">{{ $policy->title }}</h6>
-                                                                                            <small class="text-muted">
-                                                                                                <i class="fas fa-calendar me-1"></i>
-                                                                                                Created: {{ \Carbon\Carbon::parse($policy->created_at)->format('d M Y') }}
-                                                                                            </small>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                </label>
-                                                                            </div>
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            @endforeach
-                                                        </div>
-                                                    </div>
-
-                                                    {{-- Download Actions --}}
-                                                    <div class="border-top pt-3">
-                                                        <div class="d-flex justify-content-between align-items-center">
-                                                            <div>
-                                                                <span id="selected-count" class="badge bg-info">
-                                                                    <i class="fas fa-check-circle me-1"></i>
-                                                                    <span id="count-text">0</span> selected
-                                                                </span>
-                                                            </div>
-                                                            <div>
-                                                                <button type="button" 
-                                                                    class="btn btn-success" 
-                                                                    id="download-selected-btn"
-                                                                    onclick="downloadSelectedPolicies()"
-                                                                    disabled>
-                                                                    <i class="fas fa-download me-2"></i>Download Selected Policies
-                                                                </button>
-                                                                <button type="button" 
-                                                                    class="btn btn-primary" 
-                                                                    onclick="previewSelectedPolicies()"
-                                                                    id="preview-btn"
-                                                                    disabled>
-                                                                    <i class="fas fa-eye me-2"></i>Preview Selected
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-
-                                                    {{-- Policy Preview Modal --}}
-                                                    <div class="modal fade" id="policyPreviewModal" tabindex="-1">
-                                                        <div class="modal-dialog modal-lg">
-                                                            <div class="modal-content">
-                                                                <div class="modal-header bg-primary text-white">
-                                                                    <h5 class="modal-title">
-                                                                        <i class="fas fa-file-alt me-2"></i>Policy Preview
-                                                                    </h5>
-                                                                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                                                                </div>
-                                                                <div class="modal-body" id="policy-preview-content" style="max-height: 70vh; overflow-y: auto;">
-                                                                    <!-- Preview content will be loaded here -->
-                                                                </div>
-                                                                <div class="modal-footer">
-                                                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                                                                    <button type="button" class="btn btn-success" onclick="downloadFromPreview()">
-                                                                        <i class="fas fa-download me-2"></i>Download
-                                                                    </button>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                @endif
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <script>
-                                    const policies = @json($policies);
-                                    const userId = {{ $user->id }};
-                                    let selectedPolicies = [];
-
-                                    // Update selected count
-                                    function updateSelectedCount() {
-                                        const checkboxes = document.querySelectorAll('.policy-checkbox:checked');
-                                        selectedPolicies = Array.from(checkboxes).map(cb => ({
-                                            id: cb.value,
-                                            title: cb.getAttribute('data-title')
-                                        }));
-                                        const count = selectedPolicies.length;
-                                        document.getElementById('count-text').textContent = count;
-                                        document.getElementById('download-selected-btn').disabled = count === 0;
-                                        document.getElementById('preview-btn').disabled = count === 0;
-                                        
-                                        // Update badge color
-                                        const badge = document.getElementById('selected-count');
-                                        if (count > 0) {
-                                            badge.classList.remove('bg-info');
-                                            badge.classList.add('bg-success');
-                                        } else {
-                                            badge.classList.remove('bg-success');
-                                            badge.classList.add('bg-info');
-                                        }
-                                    }
-
-                                    // Select all policies
-                                    function selectAllPolicies() {
-                                        document.querySelectorAll('.policy-checkbox').forEach(cb => cb.checked = true);
-                                        updateSelectedCount();
-                                    }
-
-                                    // Deselect all policies
-                                    function deselectAllPolicies() {
-                                        document.querySelectorAll('.policy-checkbox').forEach(cb => cb.checked = false);
-                                        updateSelectedCount();
-                                    }
-
-                                    // Download selected policies
-                                    function downloadSelectedPolicies() {
-                                        if (selectedPolicies.length === 0) {
-                                            Swal.fire('Error', 'Please select at least one policy to download.', 'error');
-                                            return;
-                                        }
-
-                                        const policyIds = selectedPolicies.map(p => p.id).join(',');
-                                        const url = `{{ route('user.policies.download', ['id' => $user->id]) }}?policy_ids=${policyIds}`;
-                                        window.location.href = url;
-                                    }
-
-                                    // Preview selected policies
-                                    function previewSelectedPolicies() {
-                                        if (selectedPolicies.length === 0) {
-                                            Swal.fire('Error', 'Please select at least one policy to preview.', 'error');
-                                            return;
-                                        }
-
-                                        const modal = new bootstrap.Modal(document.getElementById('policyPreviewModal'));
-                                        const content = document.getElementById('policy-preview-content');
-                                        content.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
-                                        modal.show();
-
-                                        // Load preview content
-                                        const policyIds = selectedPolicies.map(p => p.id);
-                                        fetch(`{{ route('user.policies.preview', ['id' => $user->id]) }}?policy_ids=${policyIds.join(',')}`)
-                                            .then(response => response.text())
-                                            .then(html => {
-                                                content.innerHTML = html;
-                                            })
-                                            .catch(error => {
-                                                content.innerHTML = '<div class="alert alert-danger">Failed to load preview.</div>';
-                                            });
-                                    }
-
-                                    // Download from preview
-                                    function downloadFromPreview() {
-                                        downloadSelectedPolicies();
-                                        bootstrap.Modal.getInstance(document.getElementById('policyPreviewModal')).hide();
-                                    }
-
-                                    // Event listeners
-                                    document.addEventListener('DOMContentLoaded', function() {
-                                        document.querySelectorAll('.policy-checkbox').forEach(checkbox => {
-                                            checkbox.addEventListener('change', updateSelectedCount);
-                                        });
-                                        updateSelectedCount();
-                                    });
-                                </script>
-
-
-
-                            </div>
+        {{-- ===== PROFILE HERO ===== --}}
+        <div class="profile-hero p-4 mb-4 shadow-sm">
+            <div class="d-flex flex-wrap gap-4 align-items-center">
+                {{-- Avatar --}}
+                <div class="profile-avatar-wrap flex-shrink-0">
+                    @if ($user->profile_picture)
+                        <img src="{{ asset('storage/' . $user->profile_picture) }}" alt="Profile" class="profile-avatar">
+                        <a href="{{ asset('storage/' . $user->profile_picture) }}" download class="avatar-download" title="Download photo">
+                            <i class="fas fa-download"></i>
+                        </a>
+                    @else
+                        <div class="avatar-placeholder">
+                            <i class="fas fa-user"></i>
                         </div>
+                    @endif
+                </div>
+
+                {{-- Name + key info --}}
+                <div class="flex-grow-1">
+                    <div class="d-flex flex-wrap align-items-start gap-2 mb-1">
+                        <h4 class="mb-0 fw-semibold">{{ trim($user->fname . ' ' . $user->mname . ' ' . $user->lname) }}</h4>
+                        @php
+                            $statusClass = match(strtolower($user->status ?? '')) {
+                                'active'      => 'bg-success',
+                                'inactive'    => 'bg-secondary',
+                                'deactivated' => 'bg-danger',
+                                'pending'     => 'bg-warning text-dark',
+                                default       => 'bg-light text-dark border',
+                            };
+                        @endphp
+                        <span class="badge status-badge {{ $statusClass }}">{{ ucfirst($user->status ?? 'Unknown') }}</span>
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-3 text-muted small mb-3">
+                        @if (optional($user->jobTitle)->job_title)
+                            <span><i class="fas fa-briefcase me-1"></i>{{ $user->jobTitle->job_title }}</span>
+                        @endif
+                        @if (optional($user->department)->dept_name)
+                            <span><i class="fas fa-building me-1"></i>{{ $user->department->dept_name }}</span>
+                        @endif
+                        @if ($user->ccbrt_code)
+                            <span><i class="fas fa-id-badge me-1"></i>{{ $user->ccbrt_code }}</span>
+                        @endif
+                        @if ($user->emp_id)
+                            <span><i class="fas fa-hashtag me-1"></i>{{ $user->emp_id }}</span>
+                        @endif
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2">
+                        <a href="{{ route('user.edit', $user->id) }}" class="btn btn-sm btn-primary">
+                            <i class="fas fa-edit me-1"></i>Edit Profile
+                        </a>
+                        <a href="{{ route('employee.index') }}" class="btn btn-sm btn-outline-secondary">
+                            <i class="fas fa-arrow-left me-1"></i>Back to Staff List
+                        </a>
                     </div>
                 </div>
             </div>
         </div>
+
+        {{-- ===== MAIN CONTENT ===== --}}
+        <div class="row g-4">
+
+            {{-- LEFT COLUMN --}}
+            <div class="col-lg-8">
+
+                {{-- Employee Details --}}
+                <div class="section-card card">
+                    <div class="card-header">
+                        <h6><i class="fas fa-info-circle me-2 text-primary"></i>Employee Details</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-sm-6">
+                                <div class="info-label">Department</div>
+                                <div class="info-value">{{ optional($user->department)->dept_name ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">Job Title</div>
+                                <div class="info-value">{{ optional($user->jobTitle)->job_title ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">CCBRT Code</div>
+                                <div class="info-value">{{ $user->ccbrt_code ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">Employee ID</div>
+                                <div class="info-value">{{ $user->emp_id ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">Professional Reg. Number</div>
+                                <div class="info-value">{{ $user->professional_reg_number ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">NSSF No.</div>
+                                <div class="info-value">{{ $user->nssf_no ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">Employment Contract Type</div>
+                                <div class="info-value">{{ optional($user->employmentType)->employment_type ?? '—' }}</div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">Starting Date</div>
+                                <div class="info-value">
+                                    {{ $user->starting_date ? \Carbon\Carbon::parse($user->starting_date)->format('d M Y') : '—' }}
+                                </div>
+                            </div>
+                            <div class="col-sm-6">
+                                <div class="info-label">Joined System</div>
+                                <div class="info-value">{{ \Carbon\Carbon::parse($user->created_at)->format('d M Y') }}</div>
+                            </div>
+                            @if ($user->ending_date)
+                            <div class="col-sm-6">
+                                <div class="info-label">Ending Date</div>
+                                <div class="info-value">{{ \Carbon\Carbon::parse($user->ending_date)->format('d M Y') }}</div>
+                            </div>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+
+                {{-- Documents & Attachments --}}
+                @php
+                    $attachments = [
+                        ['label'=>'Curriculum Vitae (CV)',   'file'=>$user->employee_cv],
+                        ['label'=>'Marriage Certificate',    'file'=>($user->marital_status=='married' ? ($user->marriage_certificate ?? null) : null)],
+                        ['label'=>'Divorce Certificate',     'file'=>($user->marital_status=='divorced' ? ($user->divorced_certificate ?? $user->divorce_certificate ?? null) : null)],
+                        ['label'=>'NIDA',                    'file'=>$user->nida],
+                        ['label'=>'Driving License',         'file'=>$user->driving_license],
+                        ['label'=>'Transport ID',            'file'=>$user->transport_id],
+                        ['label'=>'Voting ID',               'file'=>$user->voting_id],
+                        ['label'=>'Other Documents',         'file'=>$user->other_document],
+                        ['label'=>'Signature',               'file'=>$user->signature],
+                    ];
+                    $hasAttachments = collect($attachments)->filter(fn($a) => !empty($a['file']))->isNotEmpty();
+                @endphp
+                @if ($hasAttachments)
+                <div class="section-card card">
+                    <div class="card-header">
+                        <h6><i class="fas fa-paperclip me-2 text-secondary"></i>Documents & Attachments</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            @foreach ($attachments as $att)
+                                @if (!empty($att['file']))
+                                <div class="col-sm-6">
+                                    <div class="doc-item">
+                                        <i class="fas fa-file-alt"></i>
+                                        <div class="flex-grow-1 small">{{ $att['label'] }}</div>
+                                        <a href="{{ asset('storage/' . $att['file']) }}" target="_blank" class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2">
+                                            <i class="fas fa-eye me-1"></i>View
+                                        </a>
+                                    </div>
+                                </div>
+                                @endif
+                            @endforeach
+                        </div>
+                    </div>
+                </div>
+                @endif
+
+                {{-- Education Documents --}}
+                @php
+                    $eduDocs = [
+                        'O-Level (Form 4)'   => ['cert'=>$user->o_level_certificate??null,  'trans'=>null, 'alt'=>$user->form_4_certificate??null],
+                        'A-Level (Form 6)'   => ['cert'=>$user->a_level_certificate??null,  'trans'=>null, 'alt'=>$user->form_6_certificate??null],
+                        'Certificate'        => ['cert'=>$user->certificate_certificate??null,'trans'=>$user->certificate_transcript??null],
+                        'Diploma'            => ['cert'=>$user->diploma_certificate??null,   'trans'=>$user->diploma_transcript??null],
+                        'Degree'             => ['cert'=>$user->degree_certificate??null,    'trans'=>$user->degree_transcript??null],
+                        'Masters'            => ['cert'=>$user->masters_certificate??null,   'trans'=>$user->masters_transcript??null],
+                        'PhD'                => ['cert'=>$user->phd_certificate??null,       'trans'=>$user->phd_transcript??null],
+                    ];
+                    $hasEdu = collect($eduDocs)->filter(fn($d) => !empty($d['cert']) || !empty($d['trans']) || !empty($d['alt']??null))->isNotEmpty();
+                @endphp
+                @if ($hasEdu)
+                <div class="section-card card">
+                    <div class="card-header">
+                        <h6><i class="fas fa-graduation-cap me-2 text-secondary"></i>Education Documents</h6>
+                    </div>
+                    <div class="card-body">
+                        @foreach ($eduDocs as $level => $docs)
+                            @php
+                                $cert  = $docs['cert'] ?? null;
+                                $trans = $docs['trans'] ?? null;
+                                $alt   = $docs['alt'] ?? null;
+                                if (empty($cert) && empty($trans) && empty($alt)) continue;
+                            @endphp
+                            <div class="mb-3">
+                                <div class="info-label mb-1">{{ $level }}</div>
+                                <div class="d-flex flex-wrap gap-2">
+                                    @if (!empty($cert))
+                                        <a href="{{ asset('storage/' . $cert) }}" target="_blank" class="edu-badge">
+                                            <i class="fas fa-file-pdf"></i> Certificate
+                                        </a>
+                                    @elseif (!empty($alt))
+                                        <a href="{{ asset('storage/' . $alt) }}" target="_blank" class="edu-badge">
+                                            <i class="fas fa-file-pdf"></i> Certificate
+                                        </a>
+                                    @endif
+                                    @if (!empty($trans))
+                                        <a href="{{ asset('storage/' . $trans) }}" target="_blank" class="edu-badge">
+                                            <i class="fas fa-file-alt"></i> Transcript
+                                        </a>
+                                    @endif
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
+                {{-- CCBRT Policies --}}
+                <div class="section-card card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0"><i class="fas fa-file-contract me-2 text-secondary"></i>CCBRT Policies</h6>
+                        @if (!$policies->isEmpty())
+                        <div class="d-flex gap-1">
+                            <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2" onclick="selectAllPolicies()">
+                                <i class="fas fa-check-square me-1"></i>All
+                            </button>
+                            <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2" onclick="deselectAllPolicies()">
+                                <i class="fas fa-square me-1"></i>None
+                            </button>
+                        </div>
+                        @endif
+                    </div>
+                    <div class="card-body">
+                        @if ($policies->isEmpty())
+                            <p class="text-muted small mb-0"><i class="fas fa-info-circle me-1"></i>No policies available.</p>
+                        @else
+                            <div class="row g-2 mb-3" id="policy-selection">
+                                @foreach ($policies as $policy)
+                                <div class="col-sm-6">
+                                    <div class="policy-card p-2">
+                                        <div class="form-check mb-0">
+                                            <input class="form-check-input policy-checkbox" type="checkbox"
+                                                value="{{ $policy->id }}" id="policy-{{ $policy->id }}"
+                                                data-title="{{ $policy->title }}">
+                                            <label class="form-check-label" for="policy-{{ $policy->id }}">
+                                                <span class="d-block fw-medium" style="font-size:.85rem;">{{ $policy->title }}</span>
+                                                <span class="text-muted" style="font-size:.75rem;">
+                                                    <i class="fas fa-calendar me-1"></i>{{ \Carbon\Carbon::parse($policy->created_at)->format('d M Y') }}
+                                                </span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                @endforeach
+                            </div>
+                            <div class="d-flex align-items-center gap-2 pt-2 border-top">
+                                <span id="selected-count" class="badge bg-secondary">
+                                    <span id="count-text">0</span> selected
+                                </span>
+                                <button type="button" class="btn btn-sm btn-success ms-auto" id="download-selected-btn" onclick="downloadSelectedPolicies()" disabled>
+                                    <i class="fas fa-download me-1"></i>Download Selected
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="previewSelectedPolicies()" id="preview-btn" disabled>
+                                    <i class="fas fa-eye me-1"></i>Preview
+                                </button>
+                            </div>
+
+                            {{-- Policy Preview Modal --}}
+                            <div class="modal fade" id="policyPreviewModal" tabindex="-1">
+                                <div class="modal-dialog modal-lg">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title"><i class="fas fa-file-alt me-2"></i>Policy Preview</h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                        </div>
+                                        <div class="modal-body" id="policy-preview-content" style="max-height:70vh;overflow-y:auto;">
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                            <button type="button" class="btn btn-success" onclick="downloadFromPreview()">
+                                                <i class="fas fa-download me-1"></i>Download
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+                    </div>
+                </div>
+
+            </div>{{-- /LEFT COLUMN --}}
+
+            {{-- RIGHT COLUMN --}}
+            <div class="col-lg-4">
+
+                {{-- Account Management --}}
+                <div class="section-card card mb-4">
+                    <div class="card-header">
+                        <h6><i class="fas fa-user-cog me-2 text-secondary"></i>Account Management</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <div class="info-label">Status</div>
+                            <span class="badge status-badge {{ $statusClass }} mt-1">{{ ucfirst($user->status ?? 'Unknown') }}</span>
+                        </div>
+                        <div class="mb-3">
+                            <div class="info-label">Joined System</div>
+                            <div class="info-value">{{ \Carbon\Carbon::parse($user->created_at)->format('d M Y') }}</div>
+                        </div>
+                        @if ($user->starting_date)
+                        <div class="mb-3">
+                            <div class="info-label">Employment Start</div>
+                            <div class="info-value">{{ \Carbon\Carbon::parse($user->starting_date)->format('d M Y') }}</div>
+                        </div>
+                        @endif
+                        <div class="d-flex flex-wrap gap-2 pt-2 border-top">
+                            @if ($user->status === 'active')
+                                <form action="{{ route('auth.deactivate', $user->id) }}" method="POST" id="deactivateForm{{ $user->id }}">
+                                    @csrf @method('PUT')
+                                    <button type="button" class="btn btn-sm btn-warning" onclick="confirmDeactivate({{ $user->id }})">
+                                        <i class="fas fa-user-slash me-1"></i>Deactivate
+                                    </button>
+                                </form>
+                            @elseif (in_array($user->status, ['inactive', 'deactivated']))
+                                <form action="{{ route('auth.activate', $user->id) }}" method="POST" onsubmit="return confirm('Activate this user?');">
+                                    @csrf @method('PUT')
+                                    <button type="submit" class="btn btn-sm btn-success">
+                                        <i class="fas fa-user-check me-1"></i>Activate
+                                    </button>
+                                </form>
+                            @endif
+                            @if ($user->status === 'inactive')
+                                <form action="{{ route('auth.destroy', $user->id) }}" method="POST" onsubmit="return confirm('Delete this user? This cannot be undone.');">
+                                    @csrf @method('DELETE')
+                                    <button type="submit" class="btn btn-sm btn-danger">
+                                        <i class="fas fa-trash me-1"></i>Delete
+                                    </button>
+                                </form>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+
+                {{-- Profile Completion (HR/Admin — inactive/pending only) --}}
+                @role('super-admin|admin|hr')
+                    @if ($user->status === 'inactive' || ($user->status === 'pending' && $existingWorkflow))
+                    <div class="section-card card mb-4">
+                        <div class="card-header">
+                            <h6><i class="fas fa-clipboard-check me-2 text-secondary"></i>Profile Completion</h6>
+                        </div>
+                        <div class="card-body p-0">
+                            @php
+                                $completionItems = [
+                                    ['label'=>'Personal Details',   'done'=>$hasPersonalDetails,   'route'=>route('hr.employee.personal-details', $user->id),   'required'=>true],
+                                    ['label'=>'Family Details',     'done'=>$hasFamilyDetails,     'route'=>route('hr.employee.family-details', $user->id),     'required'=>true],
+                                    ['label'=>'Health Details',     'done'=>$hasHealthDetails,     'route'=>route('hr.employee.health-details', $user->id),     'required'=>true],
+                                    ['label'=>'Language Knowledge', 'done'=>$hasLanguageKnowledge, 'route'=>route('hr.employee.language-knowledge', $user->id), 'required'=>true],
+                                    ['label'=>'Conflict of Interest','done'=>$hasConflictInterest, 'route'=>route('hr.employee.conflict-interest', $user->id),  'required'=>true],
+                                    ['label'=>'CCBRT Relation',     'done'=>$hasCcbrtRelation,     'route'=>route('hr.employee.ccbrt-relation', $user->id),     'required'=>false],
+                                ];
+                            @endphp
+                            <div class="px-3 pt-2 pb-1">
+                                @foreach ($completionItems as $item)
+                                <div class="completion-item">
+                                    <div class="d-flex align-items-center gap-2" style="font-size:.85rem;">
+                                        <i class="fas {{ $item['done'] ? 'fa-check-circle text-success' : ($item['required'] ? 'fa-times-circle text-danger' : 'fa-circle text-muted') }}"></i>
+                                        <span>{{ $item['label'] }}@if(!$item['required']) <small class="text-muted">(Optional)</small>@endif</span>
+                                    </div>
+                                    @if ($item['done'])
+                                        <span class="badge bg-success" style="font-size:.7rem;">Done</span>
+                                    @else
+                                        <a href="{{ $item['route'] }}" class="btn btn-xs btn-outline-primary btn-sm py-0 px-2" style="font-size:.75rem;">Fill</a>
+                                    @endif
+                                </div>
+                                @endforeach
+                            </div>
+                            <div class="px-3 py-2 border-top">
+                                @if ($profileComplete)
+                                    <div class="alert alert-success py-2 mb-0 small">
+                                        <i class="fas fa-check-circle me-1"></i>All required details completed.
+                                    </div>
+                                @elseif ($existingWorkflow)
+                                    <span class="badge bg-info"><i class="fas fa-clock me-1"></i>Pending Approval</span>
+                                @else
+                                    <div class="alert alert-warning py-2 mb-0 small">
+                                        <i class="fas fa-info-circle me-1"></i>Staff must login and sign to submit for approval.
+                                    </div>
+                                @endif
+                            </div>
+                        </div>
+                    </div>
+                    @endif
+                @endrole
+
+                {{-- On-Call Rate Management (HR/Admin) --}}
+                @role('super-admin|admin|hr')
+                <div class="section-card card">
+                    <div class="card-header">
+                        <h6><i class="fas fa-dollar-sign me-2 text-secondary"></i>On-Call Rates</h6>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">Assign which on-call rates this staff member can use. If none selected, all active rates apply.</p>
+                        <form id="oncallRatesForm" method="POST" action="{{ route('employee.update-oncall-rates', $user->id) }}">
+                            @csrf @method('PUT')
+                            @if ($allOnCallRates->isEmpty())
+                                <div class="alert alert-warning small py-2">
+                                    <i class="fas fa-exclamation-triangle me-1"></i>No active on-call rates found.
+                                </div>
+                            @else
+                                <div class="mb-3">
+                                    @foreach ($allOnCallRates as $rate)
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="checkbox" name="oncall_rates[]"
+                                            value="{{ $rate->id }}" id="rate_{{ $rate->id }}"
+                                            {{ $user->onCallRates->contains($rate->id) ? 'checked' : '' }}>
+                                        <label class="form-check-label" for="rate_{{ $rate->id }}" style="font-size:.85rem;">
+                                            <strong>{{ $rate->education_level }}</strong>
+                                            <span class="text-muted"> — TZS {{ number_format($rate->rate, 0) }}</span>
+                                        </label>
+                                    </div>
+                                    @endforeach
+                                </div>
+                                <div class="d-flex gap-2 flex-wrap border-top pt-2">
+                                    <button type="submit" class="btn btn-sm btn-primary">
+                                        <i class="fas fa-save me-1"></i>Save
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="selectAllRates">All</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="deselectAllRates">None</button>
+                                </div>
+                            @endif
+                        </form>
+                    </div>
+                </div>
+                @endrole
+
+            </div>{{-- /RIGHT COLUMN --}}
+        </div>
+
     </div>
+</div>
 
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
-    <script>
-        function confirmDeactivate(userId) {
-            Swal.fire({
-                title: 'Deactivate User?',
-                html: '<div class="text-start">' +
-                      '<p class="mb-3">Are you sure you want to deactivate this user?</p>' +
-                      '<div class="alert alert-warning mb-0">' +
-                      '<i class="fas fa-exclamation-triangle me-2"></i>' +
-                      '<strong>Warning:</strong> This user will <strong>NOT be able to access the system</strong> or login after deactivation.' +
-                      '</div>' +
-                      '</div>',
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonColor: '#ffc107',
-                cancelButtonColor: '#6c757d',
-                confirmButtonText: '<i class="fas fa-user-slash me-2"></i>Yes, Deactivate',
-                cancelButtonText: '<i class="fas fa-times me-2"></i>Cancel',
-                reverseButtons: true,
-                focusConfirm: false,
-                focusCancel: true
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    // Submit the form
-                    document.getElementById('deactivateForm' + userId).submit();
-                }
-            });
-        }
-    </script>
+<script src="{{ asset('assets/plugins/sweetalert/sweetalert2.all.min.js') }}"></script>
+<script>
+    // Deactivate confirmation
+    function confirmDeactivate(userId) {
+        Swal.fire({
+            title: 'Deactivate User?',
+            html: '<div class="text-start"><p class="mb-3">Are you sure you want to deactivate this user?</p><div class="alert alert-warning mb-0"><i class="fas fa-exclamation-triangle me-2"></i><strong>Warning:</strong> This user will <strong>NOT</strong> be able to login after deactivation.</div></div>',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#ffc107',
+            cancelButtonColor: '#6c757d',
+            confirmButtonText: '<i class="fas fa-user-slash me-2"></i>Yes, Deactivate',
+            cancelButtonText: 'Cancel',
+            reverseButtons: true,
+            focusCancel: true
+        }).then(r => { if (r.isConfirmed) document.getElementById('deactivateForm' + userId).submit(); });
+    }
 
+    // On-call rate select/deselect all
+    document.addEventListener('DOMContentLoaded', function () {
+        const cbs = document.querySelectorAll('input[name="oncall_rates[]"]');
+        document.getElementById('selectAllRates')?.addEventListener('click', () => cbs.forEach(c => c.checked = true));
+        document.getElementById('deselectAllRates')?.addEventListener('click', () => cbs.forEach(c => c.checked = false));
+
+        // Policy checkboxes
+        document.querySelectorAll('.policy-checkbox').forEach(cb => cb.addEventListener('change', updateSelectedCount));
+        updateSelectedCount();
+    });
+
+    // Policies
+    const policies = @json($policies);
+    const userId = {{ $user->id }};
+    let selectedPolicies = [];
+
+    function updateSelectedCount() {
+        const checked = document.querySelectorAll('.policy-checkbox:checked');
+        selectedPolicies = Array.from(checked).map(cb => ({ id: cb.value, title: cb.getAttribute('data-title') }));
+        const n = selectedPolicies.length;
+        document.getElementById('count-text').textContent = n;
+        const dl = document.getElementById('download-selected-btn');
+        const pv = document.getElementById('preview-btn');
+        if (dl) dl.disabled = n === 0;
+        if (pv) pv.disabled = n === 0;
+        const badge = document.getElementById('selected-count');
+        if (badge) { badge.classList.toggle('bg-success', n > 0); badge.classList.toggle('bg-secondary', n === 0); }
+    }
+
+    function selectAllPolicies() {
+        document.querySelectorAll('.policy-checkbox').forEach(cb => cb.checked = true);
+        updateSelectedCount();
+    }
+
+    function deselectAllPolicies() {
+        document.querySelectorAll('.policy-checkbox').forEach(cb => cb.checked = false);
+        updateSelectedCount();
+    }
+
+    function downloadSelectedPolicies() {
+        if (!selectedPolicies.length) { Swal.fire('Error', 'Please select at least one policy.', 'error'); return; }
+        const ids = selectedPolicies.map(p => p.id).join(',');
+        window.location.href = `{{ route('user.policies.download', ['id' => $user->id]) }}?policy_ids=${ids}`;
+    }
+
+    function previewSelectedPolicies() {
+        if (!selectedPolicies.length) { Swal.fire('Error', 'Please select at least one policy.', 'error'); return; }
+        const modal = new bootstrap.Modal(document.getElementById('policyPreviewModal'));
+        const content = document.getElementById('policy-preview-content');
+        content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
+        modal.show();
+        fetch(`{{ route('user.policies.preview', ['id' => $user->id]) }}?policy_ids=${selectedPolicies.map(p=>p.id).join(',')}`)
+            .then(r => r.text()).then(html => content.innerHTML = html)
+            .catch(() => content.innerHTML = '<div class="alert alert-danger">Failed to load preview.</div>');
+    }
+
+    function downloadFromPreview() {
+        downloadSelectedPolicies();
+        bootstrap.Modal.getInstance(document.getElementById('policyPreviewModal'))?.hide();
+    }
+</script>
 @endsection

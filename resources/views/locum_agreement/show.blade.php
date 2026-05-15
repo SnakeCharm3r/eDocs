@@ -5,19 +5,39 @@
 @endsection
 
 @section('content')
+    @php
+        $docStart = $agreement->start_date
+            ? \Carbon\Carbon::parse($agreement->start_date)
+            : \Carbon\Carbon::parse($agreement->created_at);
+        $docEnd = $agreement->end_date
+            ? \Carbon\Carbon::parse($agreement->end_date)
+            : \Carbon\Carbon::parse($agreement->created_at)->addYear();
+        $agreementStatus = (int) ($agreement->status ?? 0);
+        $statusLabels = [
+            0 => ['label' => 'Pending Line Manager Approval', 'class' => 'bg-warning text-dark', 'icon' => 'fas fa-clock'],
+            1 => ['label' => 'Pending HR Approval', 'class' => 'bg-info', 'icon' => 'fas fa-hourglass-half'],
+            2 => ['label' => 'Approved', 'class' => 'bg-success', 'icon' => 'fas fa-check-circle'],
+            3 => ['label' => 'Rejected by Line Manager', 'class' => 'bg-danger', 'icon' => 'fas fa-times-circle'],
+            4 => ['label' => 'Rejected by HR', 'class' => 'bg-danger', 'icon' => 'fas fa-times-circle'],
+            5 => ['label' => 'Expired', 'class' => 'bg-secondary', 'icon' => 'fas fa-calendar-times'],
+        ];
+        $currentStatus = $statusLabels[$agreementStatus] ?? ['label' => 'Unknown', 'class' => 'bg-secondary', 'icon' => 'fas fa-question-circle'];
+        $isExpired = $docEnd->lt(\Carbon\Carbon::today());
+    @endphp
+
     <style>
-        /* Document Styling */
         .document-container {
             max-width: 1000px;
             margin: 0 auto;
             background: #ffffff;
-            border: 1px solid #cccccc;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
-            padding: 40px 30px;
+            border: 1px solid #dee2e6;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            padding: 40px 35px;
             font-family: 'Times New Roman', Times, serif;
             font-size: 12pt;
             line-height: 1.6;
             color: #333333;
+            border-radius: 4px;
         }
 
         .document-header {
@@ -30,38 +50,41 @@
         .document-header .branding {
             font-size: 16pt;
             font-weight: bold;
-            margin-bottom: 5px;
+            margin-bottom: 2px;
+            letter-spacing: 2px;
         }
 
         .document-header .branding-sub {
             font-size: 10pt;
             color: #555555;
-            margin-bottom: 10px;
+            margin-bottom: 12px;
         }
 
         .document-title {
             font-size: 18pt;
             font-weight: bold;
             text-transform: uppercase;
-            margin: 10px 0;
+            margin: 10px 0 5px;
         }
 
         .document-subtitle {
-            font-size: 14pt;
+            font-size: 13pt;
             color: #4a4a4a;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         }
 
         .section-title {
-            font-size: 14pt;
+            font-size: 13pt;
             font-weight: bold;
-            margin: 25px 0 15px;
+            margin: 25px 0 12px;
             text-transform: uppercase;
             color: #1a1a1a;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
         }
 
         .agreement-details p {
-            margin-bottom: 15px;
+            margin-bottom: 12px;
             text-align: justify;
         }
 
@@ -70,90 +93,235 @@
             text-transform: uppercase;
         }
 
-        .criteria-list ol,
-        .compensation-list ol {
+        .criteria-list ol, .compensation-list ol {
             margin: 0 0 15px 25px;
         }
 
-        .criteria-list ol li,
-        .compensation-list ol li {
-            margin-bottom: 8px;
+        .criteria-list ol li, .compensation-list ol li {
+            margin-bottom: 6px;
+        }
+
+        .info-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 12px 0 20px;
+        }
+
+        .info-table th, .info-table td {
+            border: 1px solid #ccc;
+            padding: 10px 14px;
+            text-align: left;
+        }
+
+        .info-table th {
+            background-color: #f5f5f5;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 10pt;
+            width: 30%;
+            color: #444;
         }
 
         .claim-table {
             width: 100%;
             border-collapse: collapse;
-            margin: 15px 0 25px;
+            margin: 12px 0 20px;
         }
 
-        .claim-table th,
-        .claim-table td {
-            border: 1px solid #1a1a1a;
-            padding: 12px;
+        .claim-table th, .claim-table td {
+            border: 1px solid #ccc;
+            padding: 10px 14px;
             text-align: left;
         }
 
         .claim-table th {
-            background-color: #e6e6e6;
+            background-color: #f5f5f5;
             font-weight: bold;
             text-transform: uppercase;
+            font-size: 10pt;
+            color: #444;
+        }
+
+        /* Approval progress tracker */
+        .approval-tracker {
+            display: flex;
+            justify-content: space-between;
+            margin: 20px 0 30px;
+            position: relative;
+        }
+
+        .approval-tracker::before {
+            content: '';
+            position: absolute;
+            top: 28px;
+            left: 60px;
+            right: 60px;
+            height: 3px;
+            background: #dee2e6;
+            z-index: 0;
+        }
+
+        .approval-step {
+            flex: 1;
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .step-icon {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            margin-bottom: 8px;
+            border: 3px solid #dee2e6;
+            background: #fff;
+            transition: all 0.3s;
+        }
+
+        .step-icon.completed {
+            background: #198754;
+            border-color: #198754;
+            color: #fff;
+        }
+
+        .step-icon.active {
+            background: #fff;
+            border-color: #0d6efd;
+            color: #0d6efd;
+            animation: pulse 2s infinite;
+        }
+
+        .step-icon.rejected {
+            background: #dc3545;
+            border-color: #dc3545;
+            color: #fff;
+        }
+
+        .step-icon.pending {
+            background: #fff;
+            border-color: #dee2e6;
+            color: #adb5bd;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(13, 110, 253, 0.4); }
+            50% { box-shadow: 0 0 0 8px rgba(13, 110, 253, 0); }
+        }
+
+        .step-label {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #495057;
+            display: block;
+        }
+
+        .step-name {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 0.72rem;
+            color: #6c757d;
+            display: block;
+            margin-top: 2px;
+        }
+
+        .step-time {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 0.68rem;
+            color: #adb5bd;
+            display: block;
+        }
+
+        /* Signature section */
+        .signature-card {
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+            background: #fafafa;
+        }
+
+        .signature-card .sig-label {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #6c757d;
+            margin-bottom: 8px;
+        }
+
+        .signature-card .sig-name {
+            font-weight: bold;
             font-size: 11pt;
+            margin-bottom: 5px;
         }
 
-        .approval-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 30px;
+        .signature-card img {
+            max-width: 100px;
+            height: auto;
+            margin: 5px 0;
         }
 
-        .approval-table td {
-            border: none;
-            padding: 10px 0;
-            vertical-align: top;
-        }
-
-        .signature-line {
-            border-top: 1px solid #1a1a1a;
-            width: 180px;
-            margin-top: 30px;
+        .signature-card .sig-line {
+            border-top: 1px solid #999;
+            width: 120px;
+            margin: 10px auto 5px;
         }
 
         .document-footer {
             text-align: center;
-            font-size: 10pt;
-            color: #666666;
-            margin-top: 40px;
-            border-top: 1px solid #cccccc;
+            font-size: 9pt;
+            color: #888;
+            margin-top: 35px;
+            border-top: 1px solid #dee2e6;
             padding-top: 10px;
         }
 
-        .back-button {
+        .action-bar {
             margin-top: 20px;
-            text-align: right;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
-        /* Print Styles */
+        /* Status banner */
+        .status-banner {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            border-radius: 6px;
+            padding: 12px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-banner i {
+            font-size: 1.3rem;
+        }
+
+        .status-banner .status-text {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        .status-banner .status-sub {
+            font-size: 0.8rem;
+            opacity: 0.85;
+        }
+
         @media print {
-            .document-container {
-                box-shadow: none;
-                border: none;
-                padding: 20px;
-                margin: 0;
-            }
+            .document-container { box-shadow: none; border: none; padding: 20px; margin: 0; }
+            .action-bar, .page-header, .status-banner-wrapper { display: none !important; }
+            .page-wrapper, .content { padding: 0; margin: 0; }
+        }
 
-            .back-button {
-                display: none;
-            }
-
-            .page-wrapper,
-            .content {
-                padding: 0;
-                margin: 0;
-            }
-
-            .page-header {
-                display: none;
-            }
+        @media (max-width: 768px) {
+            .approval-tracker { flex-direction: column; gap: 15px; }
+            .approval-tracker::before { display: none; }
+            .document-container { padding: 20px 15px; }
         }
     </style>
 
@@ -161,11 +329,14 @@
         <div class="content container-fluid">
             <!-- Page Header -->
             <div class="page-header">
-                <div class="row">
-                    <div class="col-sm-12">
-                        <div class="page-sub-header">
-                            <h3 class="page-title">Locum Agreement</h3>
-                        </div>
+                <div class="row align-items-center">
+                    <div class="col">
+                        <h3 class="page-title mb-0">Locum Agreement</h3>
+                    </div>
+                    <div class="col-auto d-flex gap-2">
+                        <a href="{{ route('locum-agreements.view') }}" class="btn btn-outline-primary btn-sm">
+                            <i class="fas fa-arrow-left me-1"></i> Back
+                        </a>
                     </div>
                 </div>
             </div>
@@ -176,27 +347,50 @@
                     <div class="document-container">
                         <!-- Header -->
                         <div class="document-header">
-                            {{-- <div class="branding">CCBRT</div> --}}
+                            <img src="{{ asset('assets/img/ccbrt.jpg') }}" alt="CCBRT" style="max-width: 80px; margin-bottom: 8px;">
                             <h1 class="document-title">Locum Agreement</h1>
-                            <h3 class="document-subtitle">For CCBRT Employees</h3>
+                            <p class="document-subtitle mb-0">For CCBRT Employees</p>
                         </div>
 
-                        <!-- Agreement Details -->
+                        <!-- Employee Details -->
+                        <table class="info-table">
+                            <tr>
+                                <th>Employee Name</th>
+                                <td>{{ trim(($agreement->user->fname ?? '') . ' ' . ($agreement->user->lname ?? '')) ?: 'N/A' }}</td>
+                            </tr>
+                            <tr>
+                                <th>CCBRT Code</th>
+                                <td>{{ $agreement->user->ccbrt_code ?? 'N/A' }}</td>
+                            </tr>
+                            <tr>
+                                <th>Department</th>
+                                <td>{{ $agreement->user->department->dept_name ?? 'N/A' }}</td>
+                            </tr>
+                            <tr>
+                                <th>Education Level</th>
+                                <td>{{ $agreement->education_level ?? ($agreement->user->education_level ?? 'N/A') }}</td>
+                            </tr>
+                            <tr>
+                                <th>Locum Rate</th>
+                                <td>{{ $agreement->locum_rate ? 'TZS ' . number_format($agreement->locum_rate, 0) : 'N/A' }} <span style="font-size: 9pt; color: #888;">per day</span></td>
+                            </tr>
+                        </table>
+
+                        <!-- Preamble -->
                         <div class="agreement-details">
+                            <h4 class="section-title">Preamble</h4>
                             <p>
-                                THIS AGREEMENT is made between <strong>CCBRT</strong> (Comprehensive Community Based
-                                Rehabilitation in Tanzania), located at P.O. Box 23310, Dar es Salaam, hereinafter referred
-                                to as the <strong>EMPLOYER</strong> and
-                                <strong>{{ $agreement->user->fname ?? 'N/A' }} {{ $agreement->user->lname ?? '' }}
-                                </strong>Residing at Dar es Salaam, hereinafter referred to as the
-                                <strong>EMPLOYEE</strong>.
+                                This document, dated <strong>{{ $docStart->format('j F Y') }}</strong>, serves as a special
+                                agreement in addition to the existing 'Contract of Employment' between <strong>CCBRT (Comprehensive
+                                Community Based Rehabilitation in Tanzania)</strong>, P.O. Box 23310, Dar es Salaam, and
+                                <strong>{{ $agreement->user->fname ?? 'N/A' }} {{ $agreement->user->lname ?? '' }}</strong>
+                                residing in Dar es Salaam, hereinafter called the EMPLOYEE.
                             </p>
                             <p>
-                                WHEREAS the <strong>EMPLOYEE</strong>, a qualified professional, voluntarily agrees to
-                                undertake <strong>LOCUM</strong> work for the <strong>EMPLOYER</strong>, commencing on
-                                <strong>{{ $agreement->start_date ? \Carbon\Carbon::parse($agreement->start_date)->format('F j, Y') : '1st July 2025' }}</strong>
-                                and concluding on
-                                <strong>{{ $agreement->end_date ? \Carbon\Carbon::parse($agreement->end_date)->format('F j, Y') : '30th June 2026' }}</strong>.
+                                The EMPLOYEE voluntarily agrees to enter into this agreement for LOCUM work from
+                                <strong>{{ $docStart->format('j F Y') }}</strong>
+                                and this agreement will be valid until
+                                <strong>{{ $docEnd->format('j F Y') }}</strong>.
                             </p>
                         </div>
 
@@ -221,156 +415,103 @@
                             <ol>
                                 <li>The locum provision constitutes full compensation for services rendered, including any
                                     associated transport costs.</li>
-                                <li>The locum rate shall be determined based on the Employee’s education level, as
+                                <li>The locum rate shall be determined based on the Employee's education level, as
                                     established by CCBRT guidelines.</li>
                                 <li>Daily claims must be signed by both the Employee and their Supervisor.</li>
                                 <li>Daily claims shall be submitted to the payroll desk for processing through the payroll
                                     system.</li>
-                                <li>Claims received before the 10th of the following month will be processed in that month’s
+                                <li>Claims received before the 10th of the following month will be processed in that month's
                                     payroll. Late submissions will be processed in the subsequent month.</li>
                                 <li>All locum payments are subject to applicable statutory deductions.</li>
                             </ol>
                         </div>
 
-                        <!-- Claim Section -->
-                        <div class="claim-section">
-                            <h4 class="section-title">3. Claim</h4>
-                            <table class="claim-table">
-                                <thead>
-                                    <tr>
-                                        <th>Locum Rate</th>
-                                        <th>Education Level</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td>{{ $agreement->locum_rate ? 'TZS ' . number_format($agreement->locum_rate, 2) : 'N/A' }}
-                                        </td>
-                                        <td>{{ $agreement->education_level ?? ($user->education_level ?? 'N/A') }}</td>
+                        <!-- Signatures -->
+                        <h4 class="section-title">3. Signatures</h4>
+                        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 25px;">
+                            <div class="signature-card" style="flex: 1; min-width: 200px;">
+                                <div class="sig-label">Employee</div>
+                                <div class="sig-name">{{ $agreement->user->username ?? 'N/A' }}</div>
+                                @if ($agreement->user->signature)
+                                    <img src="data:image/png;base64,{{ $agreement->user->signature }}" alt="Employee Signature">
+                                @else
+                                    <div style="height: 50px; display: flex; align-items: center; justify-content: center; color: #adb5bd;">
+                                        <i class="fas fa-signature" style="font-size: 1.5rem;"></i>
+                                    </div>
+                                @endif
+                                <div class="sig-line"></div>
+                                <div style="font-size: 8pt; color: #999;">
+                                    @if (!empty($employeeActionAt))
+                                        {{ $employeeActionAt }}
+                                    @else
+                                        —
+                                    @endif
+                                </div>
+                            </div>
 
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
+                            <div class="signature-card" style="flex: 1; min-width: 200px;">
+                                <div class="sig-label">Supervisor / Line Manager</div>
+                                <div class="sig-name">{{ $linemanager && $linemanager->username ? $linemanager->username : 'N/A' }}</div>
+                                @if ($linemanager && $linemanager->signature && ($lmApproved ?? false))
+                                    <img src="data:image/png;base64,{{ $linemanager->signature }}" alt="Supervisor Signature">
+                                @elseif ($lmApproved ?? false)
+                                    <div style="height: 50px; display: flex; align-items: center; justify-content: center; color: #198754;">
+                                        <i class="fas fa-check-circle" style="font-size: 1.5rem;"></i>
+                                    </div>
+                                @else
+                                    <div style="height: 50px; display: flex; align-items: center; justify-content: center; color: #adb5bd;">
+                                        <span style="font-size: 0.8rem;">Pending</span>
+                                    </div>
+                                @endif
+                                <div class="sig-line"></div>
+                                <div style="font-size: 8pt; color: #999;">
+                                    @if ($lmApproved && !empty($lmActionAt))
+                                        {{ $lmActionAt }}
+                                    @elseif ($lmApproved ?? false)
+                                        —
+                                    @else
+                                        Pending
+                                    @endif
+                                </div>
+                            </div>
 
-                        <!-- Approval Section -->
-                        <div class="approval-section">
-                            <h4 class="section-title">4. Approval</h4>
-                            <style>
-                                .approval-table {
-                                    width: 100%;
-                                    border-collapse: collapse;
-                                    margin: 20px 0;
-                                }
-
-                                .approval-table td {
-                                    padding: 10px;
-                                    vertical-align: top;
-                                    border: 1px solid #ddd;
-                                }
-
-                                .signature-img {
-                                    width: 90px;
-                                    max-width: 100%;
-                                    height: auto;
-                                    display: inline-block;
-                                    vertical-align: middle;
-                                    margin: 0 5px;
-                                }
-
-                                .signature-label {
-                                    display: inline-block;
-                                    vertical-align: middle;
-                                }
-
-                                /* .signature-line {
-                                                                                        border-top: 1px solid #000;
-                                                                                        width: 90px;
-                                                                                        /* Match signature image width */
-                                /* margin-top: 5px;
-                                                                                    } */
-
-                                @media (max-width: 600px) {
-                                    .signature-img {
-                                        width: 70px;
-                                        /* Smaller size for mobile */
-                                    }
-
-
-                                }
-                            </style>
-                            <table class="approval-table">
-                                <tr>
-                                    <td>
-                                        <p><strong>Employee Name:</strong> {{ $agreement->user->username ?? 'N/A' }}</p>
-                                        <p>
-                                            <strong class="signature-label">Signature:</strong>
-                                            @if ($agreement->user->signature)
-                                                <img src="data:image/png;base64,{{ $agreement->user->signature }}"
-                                                    alt="Employee Signature" class="signature-img">
-                                            @else
-                                                <span class="signature-label">Pending</span>
-                                            @endif
-                                        </p>
-                                    </td>
-                                    <td>
-                                        <p><strong>Supervisor Name:</strong> {{ $linemanager->username ?? 'N/A' }}</p>
-                                        <p>
-                                            <strong class="signature-label">Signature:</strong>
-                                            @if ($linemanager && $linemanager->signature && ($lmApproved ?? false))
-                                                <img src="data:image/png;base64,{{ $linemanager->signature }}"
-                                                    alt="Supervisor Signature" class="signature-img">
-                                            @else
-                                                <span class="signature-label">Pending</span>
-                                            @endif
-                                        </p>
-                                        <p class="text-muted mb-0">
-                                            <strong>Action Time:</strong>
-                                            @if ($lmApproved && !empty($lmActionAt))
-                                                {{ $lmActionAt }}
-                                            @else
-                                                Pending
-                                            @endif
-                                        </p>
-                                    </td>
-                                    <td>
-                                        <p><strong>HR Name:</p> {{ $Hr->username ?? 'N/A' }}</p>
-                                        <p>
-                                            <strong class="signature-label">Signature:</strong>
-                                            @if ($Hr && $Hr->signature && ($hrApproved ?? false))
-                                                <img src="data:image/png;base64,{{ $Hr->signature }}" alt="HR Signature"
-                                                    class="signature-img">
-                                            @else
-                                                <span class="signature-label">Pending</span>
-                                            @endif
-                                        </p>
-                                        <p class="text-muted mb-0">
-                                            <strong>Action Time:</strong>
-                                            @if ($hrApproved && !empty($hrActionAt))
-                                                {{ $hrActionAt }}
-                                            @else
-                                                Pending
-                                            @endif
-                                        </p>
-                                    </td>
-                                </tr>
-                            </table>
+                            <div class="signature-card" style="flex: 1; min-width: 200px;">
+                                <div class="sig-label">Human Resources</div>
+                                <div class="sig-name">{{ $Hr && $Hr->username ? $Hr->username : 'N/A' }}</div>
+                                @if ($Hr && $Hr->signature && ($hrApproved ?? false))
+                                    <img src="data:image/png;base64,{{ $Hr->signature }}" alt="HR Signature">
+                                @elseif ($hrApproved ?? false)
+                                    <div style="height: 50px; display: flex; align-items: center; justify-content: center; color: #198754;">
+                                        <i class="fas fa-check-circle" style="font-size: 1.5rem;"></i>
+                                    </div>
+                                @else
+                                    <div style="height: 50px; display: flex; align-items: center; justify-content: center; color: #adb5bd;">
+                                        <span style="font-size: 0.8rem;">Pending</span>
+                                    </div>
+                                @endif
+                                <div class="sig-line"></div>
+                                <div style="font-size: 8pt; color: #999;">
+                                    @if ($hrApproved && !empty($hrActionAt))
+                                        {{ $hrActionAt }}
+                                    @elseif ($hrApproved ?? false)
+                                        —
+                                    @else
+                                        Pending
+                                    @endif
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Footer -->
                         <div class="document-footer">
-                            <p>CCBRT | P.O. Box 23310, Dar es Salaam, Tanzania</p>
-                            <p>Page 1 of 1</p>
+                            <p class="mb-0">CCBRT | P.O. Box 23310, Dar es Salaam, Tanzania</p>
                         </div>
 
-                        <!-- Back Button -->
-                        <div class="back-button">
+                        <!-- Action Bar -->
+                        <div class="action-bar">
                             <a href="{{ route('locum-agreements.view') }}" class="btn btn-secondary btn-sm">
-                                <i class="fas fa-arrow-left"></i> Back to Locum Agreements
+                                <i class="fas fa-arrow-left me-1"></i> Back to Agreements
                             </a>
-                            {{-- <a href="#" class="btn btn-sm btn-outline-success" title="Download">
-                                <i class="fas fa-download"></i>
-                            </a> --}}
                         </div>
                     </div>
                 </div>

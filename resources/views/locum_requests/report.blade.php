@@ -6,83 +6,29 @@
 
 @section('content')
     <style>
-        .request-table th,
-        .request-table td {
-            border: 1px solid #000;
-            padding: 10px;
-        }
-
-        .request-table th {
-            background: #f8f8f8;
-        }
-
-        .status-badge {
-            font-size: 0.9em;
-            padding: 0.4em 0.8em;
-        }
-
-        .status-badge.bg-success {
-            background-color: #61ce70 !important;
-            color: #fff;
-        }
-
-        .status-badge.bg-danger {
-            background-color: #dc3545 !important;
-            color: #fff;
-        }
-
-        /* Export button loading state */
-        .js-export-btn:disabled {
-            opacity: 0.7;
-            cursor: not-allowed;
-        }
-
-        .js-export-btn .js-spinner {
-            display: inline-block;
-        }
-
-        .js-export-btn .js-spinner.d-none {
-            display: none !important;
-        }
-
-        .status-badge.bg-warning {
-            background-color: #ffc107 !important;
-            color: #000;
-        }
-
-        .table-hover tbody tr:hover {
-            background-color: #f8f9fa;
-        }
-
-        .filter-chip {
-            font-size: .9rem;
-        }
-
-        .page-sub-header .btn-group .btn {
-            min-width: 9.5rem;
-        }
+        .status-badge { font-size: 0.85em; padding: 0.35em 0.75em; }
+        .js-export-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+        .js-export-btn .js-spinner { display: inline-block; }
+        .js-export-btn .js-spinner.d-none { display: none !important; }
+        .table-hover tbody tr:hover { background-color: #f8f9fc; }
+        .filter-chip { font-size: .85rem; }
+        .report-card { border: 0; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .report-card .card-header { background: #fff; border-bottom: 1px solid #eee; border-radius: 10px 10px 0 0; }
     </style>
 
     <div class="page-wrapper">
         <div class="content container-fluid">
             <!-- Page Header -->
-            <div class="page-header">
-                <div class="row">
-                    <div class="col-sm-12">
-                        <div class="page-sub-header d-flex justify-content-between align-items-center">
-                            <div class="btn-group" role="group" aria-label="Locum Navigation">
-                                <a href="/locum-agreement-show" class="btn btn-outline-primary btn-sm me-2">
-                                    Locum Agreements
-                                </a>
-                                <a href="{{ route('locum-requests.view') }}" class="btn btn-outline-primary btn-sm me-2">
-                                    Locum Requests
-                                </a>
-                                <a href="{{ route('locum-requests.report') }}" class="btn btn-primary btn-sm">
-                                    Reports
-                                </a>
-                            </div>
-                        </div>
-                    </div>
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <div>
+                    <h4 class="mb-1 fw-bold text-dark"><i class="fas fa-chart-bar me-2" style="color:#61ce70;"></i>Locum Reports</h4>
+                    <small class="text-muted">Analytics, trends & approved claims</small>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <a href="/locum-agreement-show" class="btn btn-outline-secondary btn-sm"><i class="fas fa-handshake me-1"></i>Agreements</a>
+                    <a href="{{ route('locum-requests.view') }}" class="btn btn-outline-secondary btn-sm"><i class="fas fa-list me-1"></i>Requests</a>
+                    <a href="{{ route('locum-requests.report') }}" class="btn btn-success btn-sm"><i class="fas fa-chart-line me-1"></i>Reports</a>
+                    <a href="{{ route('night-shift.report') }}" class="btn btn-outline-secondary btn-sm"><i class="fas fa-moon me-1"></i>Night Allowances Report</a>
                 </div>
             </div>
 
@@ -101,102 +47,166 @@
             @endif
 
             {{-- ===== Analytics & Trends Dashboard ===== --}}
-            <div class="card mb-4" style="border-color: #61ce70;">
-                <div class="card-header text-white" style="background-color: #61ce70;">
-                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                        <h5 class="mb-0 text-white">
-                            <i class="fas fa-chart-line me-2"></i>
-                            Analytics & Trends Dashboard
-                        </h5>
-                        <form method="GET" action="{{ route('locum-requests.report') }}"
-                            class="d-flex gap-2 align-items-center flex-wrap">
-                            @php
-                                $analyticsYears = isset($summaryYearOptions)
-                                    ? $summaryYearOptions
-                                    : (isset($actionedRequests)
-                                        ? $actionedRequests
-                                            ->filter(fn($r) => !is_null($r->created_at))
-                                            ->map(fn($r) => \Carbon\Carbon::parse($r->created_at)->year)
-                                            ->unique()
-                                            ->sortDesc()
-                                            ->values()
-                                        : collect());
-                                $selectedFromYear = request()->query('from_year');
-                                $selectedFromMonth = request()->query('from_month');
-                                $selectedToYear = request()->query('to_year');
-                                $selectedToMonth = request()->query('to_month');
-                                $selectedDept = request()->query('analytics_dept');
-                            @endphp
+            <div class="card report-card mb-4">
+                <div class="card-header py-3">
+                    <form method="GET" action="{{ route('locum-requests.report') }}" id="analyticsFilterForm">
+                        @php
+                            $analyticsYears = isset($summaryYearOptions)
+                                ? $summaryYearOptions
+                                : (isset($actionedRequests)
+                                    ? $actionedRequests
+                                        ->filter(fn($r) => !is_null($r->created_at))
+                                        ->map(fn($r) => \Carbon\Carbon::parse($r->created_at)->year)
+                                        ->unique()
+                                        ->sortDesc()
+                                        ->values()
+                                    : collect());
+                            $selectedFromYear = request()->query('from_year');
+                            $selectedFromMonth = request()->query('from_month');
+                            $selectedToYear = request()->query('to_year');
+                            $selectedToMonth = request()->query('to_month');
+                            $selectedDept = request()->query('analytics_dept');
+                            $selectedQuickFilter = request()->query('quick_filter');
+                        @endphp
 
-                            {{-- Department Filter --}}
-                            <div class="d-flex align-items-center gap-1">
-                                <span class="text-white small">Dept:</span>
-                                <select id="analytics_dept" name="analytics_dept" class="form-select form-select-sm"
-                                    style="width: auto; min-width: 150px;">
+                        {{-- Title Row --}}
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                            <h6 class="mb-0 fw-bold text-dark">
+                                <i class="fas fa-chart-line me-2" style="color:#61ce70;"></i>
+                                Analytics & Trends
+                            </h6>
+                            <div class="d-flex gap-2">
+                                <button type="submit" class="btn btn-sm btn-success fw-semibold">
+                                    <i class="fas fa-filter me-1"></i> Apply
+                                </button>
+                                @if (!empty($selectedFromYear) || !empty($selectedFromMonth) || !empty($selectedToYear) || !empty($selectedToMonth) || !empty($selectedDept) || !empty($selectedQuickFilter))
+                                    <a href="{{ route('locum-requests.report') }}" class="btn btn-sm btn-outline-secondary">
+                                        <i class="fas fa-redo me-1"></i> Reset
+                                    </a>
+                                @endif
+                                @canany(['view locum reports', 'ict_acces_report'])
+                                <button type="button" id="analyticsExportBtn" class="btn btn-sm btn-outline-success js-export-btn" data-loading-label="Exporting...">
+                                    <span class="btn-text"><i class="fas fa-file-excel me-1"></i>Export</span>
+                                    <span class="spinner-border spinner-border-sm ms-1 d-none js-spinner" role="status"></span>
+                                </button>
+                                @endcanany
+                            </div>
+                        </div>
+
+                        {{-- Quick Filters + Advanced in one compact row --}}
+                        <div class="row g-2 align-items-end">
+                            {{-- Quick filter pills --}}
+                            <div class="col-12 col-lg-auto">
+                                <label class="text-muted small fw-semibold mb-1 d-block"><i class="fas fa-bolt me-1"></i>Quick:</label>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button type="button" class="btn quick-filter-btn {{ $selectedQuickFilter === 'this_month' ? 'btn-success' : 'btn-outline-secondary' }}" data-filter="this_month">This Month</button>
+                                    <button type="button" class="btn quick-filter-btn {{ $selectedQuickFilter === 'last_month' ? 'btn-success' : 'btn-outline-secondary' }}" data-filter="last_month">Last Month</button>
+                                    <button type="button" class="btn quick-filter-btn {{ $selectedQuickFilter === 'last_3_months' ? 'btn-success' : 'btn-outline-secondary' }}" data-filter="last_3_months">Last 3M</button>
+                                    <button type="button" class="btn quick-filter-btn {{ $selectedQuickFilter === 'this_year' ? 'btn-success' : 'btn-outline-secondary' }}" data-filter="this_year">This Year</button>
+                                </div>
+                                <input type="hidden" name="quick_filter" id="quick_filter" value="{{ $selectedQuickFilter }}">
+                            </div>
+
+                            {{-- From month --}}
+                            <div class="col-6 col-sm-4 col-lg-2">
+                                <label class="text-muted small fw-semibold mb-1 d-block"><i class="fas fa-calendar-alt me-1"></i>From:</label>
+                                @php
+                                    $fromVal = ($selectedFromYear && $selectedFromMonth)
+                                        ? $selectedFromYear . '-' . str_pad($selectedFromMonth, 2, '0', STR_PAD_LEFT)
+                                        : date('Y') . '-01';
+                                @endphp
+                                <input type="month" id="from_month_input" class="form-control form-control-sm"
+                                    value="{{ $fromVal }}" min="2020-01" max="{{ date('Y-m') }}">
+                                <input type="hidden" name="from_year"  id="from_year"  value="{{ $selectedFromYear  ?? date('Y') }}">
+                                <input type="hidden" name="from_month" id="from_month" value="{{ $selectedFromMonth ?? 1 }}">
+                            </div>
+
+                            {{-- To month --}}
+                            <div class="col-6 col-sm-4 col-lg-2">
+                                <label class="text-muted small fw-semibold mb-1 d-block"><i class="fas fa-calendar-check me-1"></i>To:</label>
+                                @php
+                                    $toVal = ($selectedToYear && $selectedToMonth)
+                                        ? $selectedToYear . '-' . str_pad($selectedToMonth, 2, '0', STR_PAD_LEFT)
+                                        : date('Y-m');
+                                @endphp
+                                <input type="month" id="to_month_input" class="form-control form-control-sm"
+                                    value="{{ $toVal }}" min="2020-01" max="{{ date('Y-m') }}">
+                                <input type="hidden" name="to_year"  id="to_year"  value="{{ $selectedToYear  ?? date('Y') }}">
+                                <input type="hidden" name="to_month" id="to_month" value="{{ $selectedToMonth ?? (int)date('n') }}">
+                            </div>
+
+                            {{-- Department --}}
+                            <div class="col-12 col-sm-4 col-lg-3">
+                                <label class="text-muted small fw-semibold mb-1 d-block"><i class="fas fa-building me-1"></i>Department:</label>
+                                <select id="analytics_dept" name="analytics_dept" class="form-select form-select-sm">
                                     <option value="_all">All Departments</option>
                                     @foreach ($allDepartments ?? [] as $dept)
-                                        <option value="{{ $dept->dept_name }}" 
-                                            @selected($selectedDept === $dept->dept_name)>
-                                            {{ $dept->dept_name }}
-                                        </option>
+                                        <option value="{{ $dept->dept_name }}" @selected($selectedDept === $dept->dept_name)>{{ $dept->dept_name }}</option>
                                     @endforeach
                                 </select>
                             </div>
+                        </div>
 
-                            {{-- Date Range Filter: From --}}
-                            <div class="d-flex align-items-center gap-1">
-                                <span class="text-white small">From:</span>
-                                <select id="from_year" name="from_year" class="form-select form-select-sm"
-                                    style="width: auto; min-width: 100px;">
-                                    <option value="">Year</option>
-                                    @foreach ($analyticsYears as $y)
-                                        <option value="{{ $y }}" @selected((string) ($selectedFromYear ?? '') === (string) $y)>{{ $y }}
-                                        </option>
-                                    @endforeach
-                                </select>
-                                <select id="from_month" name="from_month" class="form-select form-select-sm"
-                                    style="width: auto; min-width: 120px;">
-                                    <option value="">Month</option>
-                                    @foreach ([1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April', 5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August', 9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'] as $num => $name)
-                                        <option value="{{ $num }}" @selected((string) ($selectedFromMonth ?? '') === (string) $num)>{{ $name }}
-                                        </option>
-                                    @endforeach
-                                </select>
-                            </div>
+                        {{-- JS: sync month inputs → hidden year/month fields --}}
+                        <script>
+                        document.addEventListener('DOMContentLoaded', function() {
+                            function syncMonth(inputId, yearId, monthId) {
+                                var el = document.getElementById(inputId);
+                                if (!el) return;
+                                el.addEventListener('change', function() {
+                                    var parts = this.value.split('-');
+                                    if (parts.length === 2) {
+                                        document.getElementById(yearId).value  = parts[0];
+                                        document.getElementById(monthId).value = parseInt(parts[1], 10);
+                                    }
+                                    document.getElementById('quick_filter').value = '';
+                                });
+                            }
+                            syncMonth('from_month_input', 'from_year', 'from_month');
+                            syncMonth('to_month_input',   'to_year',   'to_month');
 
-                            {{-- Date Range Filter: To --}}
-                            <div class="d-flex align-items-center gap-1">
-                                <span class="text-white small">To:</span>
-                                <select id="to_year" name="to_year" class="form-select form-select-sm"
-                                    style="width: auto; min-width: 100px;">
-                                    <option value="">Year</option>
-                                    @foreach ($analyticsYears as $y)
-                                        <option value="{{ $y }}" @selected((string) ($selectedToYear ?? '') === (string) $y)>
-                                            {{ $y }}</option>
-                                    @endforeach
-                                </select>
-                                <select id="to_month" name="to_month" class="form-select form-select-sm"
-                                    style="width: auto; min-width: 120px;">
-                                    <option value="">Month</option>
-                                    @foreach ([1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April', 5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August', 9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'] as $num => $name)
-                                        <option value="{{ $num }}" @selected((string) ($selectedToMonth ?? '') === (string) $num)>
-                                            {{ $name }}</option>
-                                    @endforeach
-                                </select>
-                            </div>
+                            var analyticsExportBtn = document.getElementById('analyticsExportBtn');
+                            if (analyticsExportBtn) {
+                                analyticsExportBtn.addEventListener('click', function() {
+                                    var fromYear  = document.getElementById('from_year').value;
+                                    var fromMonth = document.getElementById('from_month').value;
+                                    var toYear    = document.getElementById('to_year').value;
+                                    var toMonth   = document.getElementById('to_month').value;
+                                    var dept      = document.getElementById('analytics_dept') ? document.getElementById('analytics_dept').value : '_all';
+                                    var qf        = document.getElementById('quick_filter').value;
 
-                            <button type="submit" class="btn btn-sm"
-                                style="background-color: #fff; border-color: #fff; color: #61ce70;">
-                                <i class="fas fa-filter"></i> Apply
-                            </button>
-                            @if (!empty($selectedFromYear) || !empty($selectedFromMonth) || !empty($selectedToYear) || !empty($selectedToMonth) || !empty($selectedDept))
-                                <a href="{{ route('locum-requests.report') }}" class="btn btn-sm"
-                                    style="background-color: #fff; border-color: #fff; color: #61ce70;">
-                                    Reset
-                                </a>
-                            @endif
-                        </form>
-                    </div>
+                                    var params = new URLSearchParams({
+                                        year:       toYear,
+                                        month:      toMonth,
+                                        from_year:  fromYear,
+                                        from_month: fromMonth,
+                                        to_year:    toYear,
+                                        to_month:   toMonth,
+                                        department: dept,
+                                        basis:      'approved',
+                                        hr:         '1'
+                                    });
+                                    if (qf) params.set('quick_filter', qf);
+
+                                    var btn = this;
+                                    var btnText = btn.querySelector('.btn-text');
+                                    var spinner = btn.querySelector('.js-spinner');
+                                    btn.disabled = true;
+                                    if (btnText) btnText.textContent = btn.dataset.loadingLabel || 'Exporting...';
+                                    if (spinner) spinner.classList.remove('d-none');
+
+                                    window.location.href = '{{ route('locum-requests.actioned.export') }}?' + params.toString();
+
+                                    setTimeout(function() {
+                                        btn.disabled = false;
+                                        if (btnText) { btnText.innerHTML = '<i class="fas fa-file-excel me-1"></i>Export'; }
+                                        if (spinner) spinner.classList.add('d-none');
+                                    }, 4000);
+                                });
+                            }
+                        });
+                        </script>
+                    </form>
                 </div>
                 <div class="card-body">
                     {{-- Summary Cards with Growth Indicators --}}
@@ -204,12 +214,20 @@
                         $trendsArray = array_values($analytics['monthly_trends'] ?? []);
                         $totalAmount = 0;
                         $totalRequests = 0;
+                        $totalHours = 0;
                         $avgPerMonth = 0;
                         
                         if (!empty($trendsArray)) {
                             $totalAmount = array_sum(array_column($trendsArray, 'amount'));
                             $totalRequests = array_sum(array_column($trendsArray, 'count'));
+                            $totalHours = array_sum(array_column($trendsArray, 'hours'));
                             $avgPerMonth = count($trendsArray) > 0 ? $totalAmount / count($trendsArray) : 0;
+                        }
+                        
+                        // Count unique employees from department trends
+                        $totalEmployees = 0;
+                        if (isset($analytics['department_trends'])) {
+                            $totalEmployees = collect($analytics['department_trends'])->sum('total_employees');
                         }
                         
                         $growthAmount = $analytics['growth_amount'] ?? 0;
@@ -218,238 +236,184 @@
                         $countGrowthPercent = $analytics['count_growth_percent'] ?? 0;
                     @endphp
                     
+
+                    {{-- Charts Row --}}
                     <div class="row mb-4">
-                        <div class="col-md-4">
-                            <div class="card shadow-sm" style="border-left: 4px solid #3b82f6; background: #fff;">
-                                <div class="card-body">
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <div>
-                                            <h6 class="card-title mb-1" style="color: #6b7280; font-weight: 600; font-size: 0.9rem;">
-                                                <i class="fas fa-money-bill-wave me-2" style="color: #3b82f6;"></i>Total Amount
-                                            </h6>
-                                            <h3 class="mb-0" style="color: #1f2937; font-weight: 700;">{{ number_format($totalAmount, 0) }} TZS</h3>
-                                            @if (count($trendsArray) >= 2)
-                                                <small class="d-flex align-items-center mt-2" style="color: #6b7280;">
-                                                    @if ($growthPercent > 0)
-                                                        <i class="fas fa-arrow-up me-1 text-success"></i>
-                                                        <span class="text-success">+{{ number_format($growthPercent, 1) }}%</span>
-                                                    @elseif ($growthPercent < 0)
-                                                        <i class="fas fa-arrow-down me-1 text-danger"></i>
-                                                        <span class="text-danger">{{ number_format($growthPercent, 1) }}%</span>
-                                                    @else
-                                                        <span class="text-muted">No change</span>
-                                                    @endif
-                                                    <span class="ms-2">vs previous month</span>
-                                                </small>
-                                            @endif
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="card shadow-sm" style="border-left: 4px solid #10b981; background: #fff;">
-                                <div class="card-body">
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <div>
-                                            <h6 class="card-title mb-1" style="color: #6b7280; font-weight: 600; font-size: 0.9rem;">
-                                                <i class="fas fa-file-alt me-2" style="color: #10b981;"></i>Total Requests
-                                            </h6>
-                                            <h3 class="mb-0" style="color: #1f2937; font-weight: 700;">{{ number_format($totalRequests, 0) }}</h3>
-                                            @if (count($trendsArray) >= 2)
-                                                <small class="d-flex align-items-center mt-2" style="color: #6b7280;">
-                                                    @if ($countGrowthPercent > 0)
-                                                        <i class="fas fa-arrow-up me-1 text-success"></i>
-                                                        <span class="text-success">+{{ number_format($countGrowthPercent, 1) }}%</span>
-                                                    @elseif ($countGrowthPercent < 0)
-                                                        <i class="fas fa-arrow-down me-1 text-danger"></i>
-                                                        <span class="text-danger">{{ number_format($countGrowthPercent, 1) }}%</span>
-                                                    @else
-                                                        <span class="text-muted">No change</span>
-                                                    @endif
-                                                    <span class="ms-2">vs previous month</span>
-                                                </small>
-                                            @endif
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="card shadow-sm" style="border-left: 4px solid #f59e0b; background: #fff;">
-                                <div class="card-body">
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <div>
-                                            <h6 class="card-title mb-1" style="color: #6b7280; font-weight: 600; font-size: 0.9rem;">
-                                                <i class="fas fa-calendar-alt me-2" style="color: #f59e0b;"></i>Avg per Month
-                                            </h6>
-                                            <h3 class="mb-0" style="color: #1f2937; font-weight: 700;">{{ number_format($avgPerMonth, 0) }} TZS</h3>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {{-- Main Chart --}}
-                    <div id="departmentTrendChart" style="min-height: 400px;"></div>
-                    
-                    {{-- Department Performance Table --}}
-                    <div class="mt-4">
-                        <h6 class="mb-3" style="color: #333; font-weight: 600;">
-                            <i class="fas fa-building me-2"></i>Department Performance
-                        </h6>
-                        <div class="table-responsive">
-                            <table class="table table-bordered table-hover">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th>Department</th>
-                                        <th class="text-end">Total Amount (TZS)</th>
-                                        <th class="text-end">Total Requests</th>
-                                        <th class="text-end">Total Hours</th>
-                                        <th class="text-end">Avg per Request</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @if (isset($analytics['department_trends']) && count($analytics['department_trends']) > 0)
-                                        @foreach ($analytics['department_trends'] as $deptName => $deptData)
-                                            <tr>
-                                                <td><strong>{{ $deptName }}</strong></td>
-                                                <td class="text-end">{{ number_format($deptData['total_amount'], 0) }}</td>
-                                                <td class="text-end">{{ number_format($deptData['total_requests'], 0) }}</td>
-                                                <td class="text-end">{{ number_format($deptData['total_hours'], 1) }}</td>
-                                                <td class="text-end">{{ number_format($deptData['avg_per_request'], 0) }}</td>
-                                            </tr>
-                                        @endforeach
-                                    @else
-                                        <tr>
-                                            <td colspan="5" class="text-center text-muted py-4">
-                                                <i class="fas fa-info-circle me-2"></i>No data available for the selected period
-                                            </td>
-                                        </tr>
-                                    @endif
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Filters + Export -->
-            <p>
-                <a class="btn btn-sm" style="background-color: #61ce70; border-color: #61ce70; color: #fff;"
-                    data-bs-toggle="collapse" href="#filterCollapse" role="button" aria-expanded="true"
-                    aria-controls="filterCollapse">
-                    Filter & Export
-                </a>
-            </p>
-
-            <div class="collapse show" id="filterCollapse">
-                <div class="card card-body mb-3">
-                    <form id="filterForm" class="row g-3 align-items-center" method="GET"
-                        action="{{ route('locum-requests.actioned.export') }}">
-
-                        @php
-                            $years = $actionedRequests
-                                ->filter(fn($r) => !is_null($r->created_at))
-                                ->map(fn($r) => \Carbon\Carbon::parse($r->created_at)->year)
-                                ->unique()
-                                ->sortDesc();
-
-                            $deptNames = $actionedRequests
-                                ->map(fn($r) => $r->user?->department?->dept_name)
-                                ->filter()
-                                ->unique()
-                                ->sort();
-                        @endphp
-
-                        {{-- Year --}}
-                        <div class="col-auto">
-                            <label for="filterYear" class="col-form-label">Year</label>
-                        </div>
-                        <div class="col-auto">
-                            <select id="filterYear" name="year" class="form-select">
-                                <option value="">All Years</option>
-                                @foreach ($years as $year)
-                                    <option value="{{ $year }}">{{ $year }}</option>
-                                @endforeach
-                            </select>
-                        </div>
-
-                        {{-- Month --}}
-                        <div class="col-auto">
-                            <label for="filterMonth" class="col-form-label">Month</label>
-                        </div>
-                        <div class="col-auto">
-                            <select id="filterMonth" name="month" class="form-select">
-                                <option value="">All Months</option>
-                                @foreach ([1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April', 5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August', 9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December'] as $num => $name)
-                                    <option value="{{ $num }}">{{ $name }}</option>
-                                @endforeach
-                            </select>
-                        </div>
-
-                        {{-- Department --}}
-                        <div class="col-auto">
-                            <label for="filterDept" class="col-form-label">Department</label>
-                        </div>
-                        <div class="col-auto">
-                            <select id="filterDept" name="department" class="form-select">
-                                <option value="_all">All Departments</option>
-                                @foreach ($deptNames as $dept)
-                                    <option value="{{ $dept }}">{{ $dept }}</option>
-                                @endforeach
-                            </select>
-                        </div>
-
-                        {{-- Basis --}}
-                        <div class="col-auto">
-                            <label for="filterBasis" class="col-form-label">Basis</label>
-                        </div>
-                        <div class="col-auto">
-                            <select id="filterBasis" name="basis" class="form-select">
-                                <option value="approved" selected>Approved Month (Payment)</option>
-                                <option value="locum">Claim Month</option>
-                                <option value="created">Submitted Month</option>
-                            </select>
-                        </div>
-
-                        {{-- Export HR Approved only --}}
-                        <div class="col-auto">
-                            <button type="submit" class="btn btn-outline-success btn-sm js-export-btn" name="hr"
-                                value="1" data-loading-label="Exporting...">
-                                <span class="btn-text">
-                                    <i class="fas fa-file-excel"></i> Export Approved
-                                </span>
-                                <span class="spinner-border spinner-border-sm ms-2 d-none js-spinner" role="status"
-                                    aria-hidden="true"></span>
-                            </button>
-                        </div>
-
-                        {{-- Visual chips --}}
                         <div class="col-12">
-                            <span id="chipYear" class="badge rounded-pill text-bg-light filter-chip d-none">Year:
-                                —</span>
-                            <span id="chipMonth" class="badge rounded-pill text-bg-light filter-chip d-none">Month:
-                                —</span>
-                            <span id="chipDept" class="badge rounded-pill text-bg-light filter-chip d-none">Department:
-                                —</span>
-                            <span id="chipBasis" class="badge rounded-pill text-bg-light filter-chip d-none">Basis:
-                                —</span>
+                            <div class="card shadow-sm">
+                                <div class="card-header bg-white py-2">
+                                    <h6 class="mb-0" style="color: #333; font-weight: 600;">
+                                        <i class="fas fa-chart-bar me-2" style="color:#3b82f6;"></i>Claims Cost by Month — {{ date('Y') }}
+                                    </h6>
+                                </div>
+                                <div class="card-body">
+                                    <div id="departmentTrendChart" style="min-height: 380px;"></div>
+                                </div>
+                            </div>
                         </div>
-                    </form>
+                    </div>
+                    
+                    {{-- Department Performance Table with Monthly Breakdown --}}
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0" style="color: #333; font-weight: 600;">
+                                <i class="fas fa-building me-2 text-info"></i>Department Performance Summary
+                            </h6>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button type="button" class="btn btn-outline-secondary active" id="viewSummary">
+                                    <i class="fas fa-table"></i> Summary
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary" id="viewMonthly">
+                                    <i class="fas fa-calendar-alt"></i> Monthly
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            {{-- Summary View --}}
+                            <div id="summaryTableView">
+                                <div class="table-responsive">
+                                    <table class="table table-bordered table-hover table-sm" id="deptSummaryTable">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Department</th>
+                                                <th class="text-end">Total Amount (TZS)</th>
+                                                <th class="text-end">Requests</th>
+                                                <th class="text-end">Hours</th>
+                                                <th class="text-end">Employees</th>
+                                                <th class="text-end">Avg/Request</th>
+                                                <th class="text-center">Trend</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @if (isset($analytics['department_trends']) && count($analytics['department_trends']) > 0)
+                                                @php
+                                                    $maxAmount = collect($analytics['department_trends'])->max('total_amount');
+                                                @endphp
+                                                @foreach ($analytics['department_trends'] as $deptName => $deptData)
+                                                    @php
+                                                        $percentage = $maxAmount > 0 ? ($deptData['total_amount'] / $maxAmount) * 100 : 0;
+                                                    @endphp
+                                                    <tr>
+                                                        <td>
+                                                            <strong>{{ $deptName }}</strong>
+                                                            <div class="progress mt-1" style="height: 4px;">
+                                                                <div class="progress-bar bg-success" style="width: {{ $percentage }}%"></div>
+                                                            </div>
+                                                        </td>
+                                                        <td class="text-end fw-semibold">{{ number_format($deptData['total_amount'], 0) }}</td>
+                                                        <td class="text-end">{{ number_format($deptData['total_requests'], 0) }}</td>
+                                                        <td class="text-end">{{ number_format($deptData['total_hours'], 1) }}</td>
+                                                        <td class="text-end">{{ number_format($deptData['total_employees'] ?? 0, 0) }}</td>
+                                                        <td class="text-end">{{ number_format($deptData['avg_per_request'], 0) }}</td>
+                                                        <td class="text-center">
+                                                            <div id="sparkline-{{ Str::slug($deptName) }}" style="height: 25px; width: 80px; display: inline-block;"></div>
+                                                        </td>
+                                                    </tr>
+                                                @endforeach
+                                            @else
+                                                <tr>
+                                                    <td colspan="7" class="text-center text-muted py-4">
+                                                        <i class="fas fa-info-circle me-2"></i>No data available for the selected period
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                        </tbody>
+                                        @if (isset($analytics['department_trends']) && count($analytics['department_trends']) > 0)
+                                            <tfoot class="table-light fw-bold">
+                                                <tr>
+                                                    <td>TOTAL</td>
+                                                    <td class="text-end">{{ number_format(collect($analytics['department_trends'])->sum('total_amount'), 0) }}</td>
+                                                    <td class="text-end">{{ number_format(collect($analytics['department_trends'])->sum('total_requests'), 0) }}</td>
+                                                    <td class="text-end">{{ number_format(collect($analytics['department_trends'])->sum('total_hours'), 1) }}</td>
+                                                    <td class="text-end">{{ number_format($totalEmployees, 0) }}</td>
+                                                    <td class="text-end">—</td>
+                                                    <td></td>
+                                                </tr>
+                                            </tfoot>
+                                        @endif
+                                    </table>
+                                </div>
+                            </div>
+
+                            {{-- Monthly Breakdown View (Hidden by default) --}}
+                            <div id="monthlyTableView" style="display: none;">
+                                <div class="table-responsive">
+                                    <table class="table table-bordered table-hover table-sm" id="monthlyBreakdownTable">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th class="sticky-col">Department</th>
+                                                @if (!empty($trendsArray))
+                                                    @foreach ($trendsArray as $trend)
+                                                        <th class="text-end" style="min-width: 100px;">{{ $trend['label'] }}</th>
+                                                    @endforeach
+                                                @endif
+                                                <th class="text-end bg-light fw-bold">Total</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @if (isset($analytics['department_trends']) && count($analytics['department_trends']) > 0)
+                                                @foreach ($analytics['department_trends'] as $deptName => $deptData)
+                                                    <tr>
+                                                        <td class="sticky-col"><strong>{{ $deptName }}</strong></td>
+                                                        @if (!empty($trendsArray))
+                                                            @foreach ($trendsArray as $monthKey => $trend)
+                                                                @php
+                                                                    $monthAmount = $trend['by_department'][$deptName] ?? 0;
+                                                                    // Convert from K back to actual amount for display
+                                                                    $displayAmount = $monthAmount * 1000;
+                                                                @endphp
+                                                                <td class="text-end {{ $monthAmount > 0 ? '' : 'text-muted' }}">
+                                                                    {{ $monthAmount > 0 ? number_format($displayAmount, 0) : '—' }}
+                                                                </td>
+                                                            @endforeach
+                                                        @endif
+                                                        <td class="text-end bg-light fw-bold">{{ number_format($deptData['total_amount'], 0) }}</td>
+                                                    </tr>
+                                                @endforeach
+                                            @else
+                                                <tr>
+                                                    <td colspan="{{ count($trendsArray) + 2 }}" class="text-center text-muted py-4">
+                                                        <i class="fas fa-info-circle me-2"></i>No data available for the selected period
+                                                    </td>
+                                                </tr>
+                                            @endif
+                                        </tbody>
+                                        @if (isset($analytics['department_trends']) && count($analytics['department_trends']) > 0)
+                                            <tfoot class="table-light fw-bold">
+                                                <tr>
+                                                    <td class="sticky-col">TOTAL</td>
+                                                    @if (!empty($trendsArray))
+                                                        @foreach ($trendsArray as $trend)
+                                                            <td class="text-end">{{ number_format($trend['amount'], 0) }}</td>
+                                                        @endforeach
+                                                    @endif
+                                                    <td class="text-end bg-warning-subtle">{{ number_format(collect($analytics['department_trends'])->sum('total_amount'), 0) }}</td>
+                                                </tr>
+                                            </tfoot>
+                                        @endif
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <!-- View Requests & Approval Process -->
-            <div class="card mb-4" style="border-color: #61ce70;">
-                <div class="card-header text-white" style="background-color: #61ce70;">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0 text-white">
-                            <i class="fas fa-list me-2"></i>
-                            Pending requests
-                        </h5>
-                        <div class="d-flex gap-2 align-items-center">
+            <div class="card report-card mb-4">
+                <div class="card-header py-3">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h6 class="mb-0 fw-bold text-dark">
+                            <i class="fas fa-list me-2" style="color:#4e73df;"></i>
+                            <span id="tableTitle">All Requests</span>
+                        </h6>
+                        <div class="d-flex gap-2 align-items-center flex-wrap">
+                            <select id="filterStatus" class="form-select form-select-sm" style="width: auto; min-width: 130px;">
+                                <option value="">All Status</option>
+                                <option value="approved">Approved</option>
+                                <option value="pending">Pending</option>
+                                <option value="rejected">Rejected</option>
+                            </select>
                             <select id="filterYear" class="form-select form-select-sm" style="width: auto;">
                                 <option value="">All Years</option>
                                 @php
@@ -469,6 +433,22 @@
                                     <option value="{{ $num }}">{{ $name }}</option>
                                 @endforeach
                             </select>
+                            @canany(['view locum reports', 'ict_acces_report'])
+                            <form id="filterForm" method="GET" action="{{ route('locum-requests.actioned.export') }}" class="d-inline">
+                                @php
+                                    $exportYears = $actionedRequests->filter(fn($r) => !is_null($r->created_at))->map(fn($r) => \Carbon\Carbon::parse($r->created_at)->year)->unique()->sortDesc();
+                                @endphp
+                                <input type="hidden" name="year" id="exportYear" value="">
+                                <input type="hidden" name="month" id="exportMonth" value="">
+                                <input type="hidden" name="department" value="_all">
+                                <input type="hidden" name="basis" value="approved">
+                                <input type="hidden" name="hr" value="1">
+                                <button type="submit" class="btn btn-sm btn-outline-success js-export-btn" data-loading-label="Exporting...">
+                                    <span class="btn-text"><i class="fas fa-file-excel me-1"></i>Export</span>
+                                    <span class="spinner-border spinner-border-sm ms-1 d-none js-spinner" role="status"></span>
+                                </button>
+                            </form>
+                            @endcanany
                         </div>
                     </div>
                 </div>
@@ -602,8 +582,15 @@
                                                 }
                                             }
                                         }
+                                        // Determine status category for filtering
+                                        $statusCategory = 'pending'; // default
+                                        if ($statusClass === 'success') {
+                                            $statusCategory = 'approved';
+                                        } elseif ($statusClass === 'danger') {
+                                            $statusCategory = 'rejected';
+                                        }
                                     @endphp
-                                    <tr>
+                                    <tr data-status="{{ $statusCategory }}">
                                         <td>{{ $index + 1 }}</td>
                                         <td>{{ $employeeName }}</td>
                                         <td>{{ $deptName }}</td>
@@ -615,12 +602,20 @@
                                             <span class="badge bg-{{ $statusClass }}">{{ $statusLabel }}</span>
                                         </td>
                                         <td>
-                                            <button type="button"
-                                                class="btn btn-sm btn-outline-primary view-approval-process"
-                                                data-request-id="{{ $request->id }}" data-bs-toggle="modal"
-                                                data-bs-target="#approvalProcessModal">
-                                                <i class="fas fa-eye me-1"></i>
-                                            </button>
+                                            <div class="d-flex gap-1">
+                                                <button type="button"
+                                                    class="btn btn-sm btn-outline-primary view-approval-process"
+                                                    data-request-id="{{ $request->id }}" data-bs-toggle="modal"
+                                                    data-bs-target="#approvalProcessModal" title="View Approval Process">
+                                                    <i class="fas fa-eye me-1"></i>
+                                                </button>
+                                                <button type="button"
+                                                    class="btn btn-sm btn-outline-success view-worked-days-report"
+                                                    data-request-id="{{ $request->id }}" data-bs-toggle="modal"
+                                                    data-bs-target="#workedDaysModal" title="View Worked Days">
+                                                    <i class="fas fa-calendar-day me-1"></i>
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 @endforeach
@@ -641,6 +636,27 @@
                                 aria-label="Close"></button>
                         </div>
                         <div class="modal-body" id="approvalProcessContent">
+                            <div class="text-center">
+                                <div class="spinner-border" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Worked Days Modal -->
+            <div class="modal fade" id="workedDaysModal" tabindex="-1" aria-labelledby="workedDaysModalLabel"
+                aria-hidden="true">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="workedDaysModalLabel">Worked Days</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"
+                                aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body" id="workedDaysContent">
                             <div class="text-center">
                                 <div class="spinner-border" role="status">
                                     <span class="visually-hidden">Loading...</span>
@@ -711,101 +727,23 @@
 
     <script>
         $(function() {
-            // Init DataTables for each table
-            $('table.request-table').each(function() {
-                $(this).DataTable({
-                    pageLength: 10,
-                    ordering: true,
-                    searching: true,
-                    paging: true,
-                    info: true,
-                    language: {
-                        emptyTable: "No locum requests found",
-                        info: "Showing _START_ to _END_ of _TOTAL_ entries",
-                        search: "Search:",
-                        lengthMenu: "Show _MENU_ entries"
-                    }
-                });
+            // Sync export hidden fields with table filter values
+            $('#filterYear, #filterMonth').on('change', function() {
+                $('#exportYear').val($('#filterYear').val());
+                $('#exportMonth').val($('#filterMonth').val());
             });
 
-            // Chips update (visual)
-            function updateChips() {
-                const y = $('#filterYear').val();
-                const m = $('#filterMonth').val();
-                const d = $('#filterDept').val();
-                const b = $('#filterBasis').val();
-
-                const mName = $('#filterMonth option:selected').text();
-                const dName = $('#filterDept option:selected').text();
-                const bName = $('#filterBasis option:selected').text();
-
-                if (y) $('#chipYear').removeClass('d-none').text('Year: ' + y);
-                else $('#chipYear').addClass('d-none');
-                if (m) $('#chipMonth').removeClass('d-none').text('Month: ' + mName);
-                else $('#chipMonth').addClass('d-none');
-                if (d && d !== '_all') $('#chipDept').removeClass('d-none').text('Department: ' + dName);
-                else $('#chipDept').addClass('d-none');
-                if (b) $('#chipBasis').removeClass('d-none').text('Basis: ' + bName);
-                else $('#chipBasis').addClass('d-none');
-            }
-
-            // Client-side dept filter for table rows (visual only)
-            function applyFilters() {
-                const dept = $('#filterDept').val();
-                $('table.request-table tbody tr').each(function() {
-                    const rowDept = ($(this).attr('data-dept') || '').toString();
-                    const show = !dept || dept === '_all' || rowDept === dept;
-                    $(this).toggle(show);
-                });
-            }
-
-            $('#filterYear, #filterMonth, #filterDept, #filterBasis').on('change', function() {
-                updateChips();
-                applyFilters();
-            });
-
-            updateChips();
-            applyFilters();
-
-            // Export button loading state and download handling
-            $('#filterForm').on('submit', function(e) {
-                e.preventDefault();
-
+            // Export button loading state
+            $('#filterForm').on('submit', function() {
                 const exportBtn = $(this).find('.js-export-btn');
-                if (!exportBtn.length) {
-                    return;
-                }
-
-                const loadingLabel = exportBtn.data('loading-label') || 'Exporting...';
-                const form = $(this);
-                const formData = form.serialize();
-                const actionUrl = form.attr('action');
-
-                // Show loading state
+                if (!exportBtn.length) return;
                 exportBtn.prop('disabled', true);
-                exportBtn.find('.btn-text').html('<i class="fas fa-file-excel"></i> ' + loadingLabel);
+                exportBtn.find('.btn-text').html('<i class="fas fa-file-excel me-1"></i>Exporting...');
                 exportBtn.find('.js-spinner').removeClass('d-none');
-
-                // Create a hidden iframe to download the file
-                const iframe = $('<iframe>', {
-                    id: 'export-iframe',
-                    style: 'display: none;',
-                    src: actionUrl + '?' + formData
-                });
-
-                $('body').append(iframe);
-
-                // Remove loading state after download starts (adjust timing as needed)
                 setTimeout(function() {
                     exportBtn.prop('disabled', false);
-                    exportBtn.find('.btn-text').html(
-                        '<i class="fas fa-file-excel"></i> Export Approved');
+                    exportBtn.find('.btn-text').html('<i class="fas fa-file-excel me-1"></i>Export');
                     exportBtn.find('.js-spinner').addClass('d-none');
-
-                    // Remove iframe after a delay
-                    setTimeout(function() {
-                        $('#export-iframe').remove();
-                    }, 2000);
                 }, 3000);
             });
 
@@ -873,6 +811,91 @@
                 });
             });
 
+            // View worked days (using event delegation for dynamically loaded content)
+            $(document).on('click', '.view-worked-days-report', function() {
+                const requestId = $(this).data('request-id');
+                const content = $('#workedDaysContent');
+
+                content.html(
+                    '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>'
+                );
+
+                $.ajax({
+                    url: '{{ route('locum-requests.worked-days', ':id') }}'.replace(':id', requestId),
+                    method: 'GET',
+                    success: function(data) {
+                        let html = '<div class="table-responsive">';
+                        html += '<table class="table table-bordered table-sm">';
+                        html += '<thead class="table-light">';
+                        html += '<tr><th>Date</th><th>Worked</th><th>Entries (Shift / Hours / Platform / Unit)</th></tr>';
+                        html += '</thead><tbody>';
+
+                        const wdMap = data.workedDays || {};
+                        const btMap = data.bioTimeData || {};
+                        
+                        // Union of dates from biotime + worked_days so we show whole month
+                        const dateSet = new Set([
+                            ...Object.keys(btMap || {}),
+                            ...Object.keys(wdMap || {}),
+                        ]);
+                        const allDates = Array.from(dateSet).sort();
+
+                        if (allDates.length === 0) {
+                            html += '<tr><td colspan="3" class="text-center text-muted">No worked days data available.</td></tr>';
+                        } else {
+                            allDates.forEach(dateIso => {
+                                const info = wdMap[dateIso] || {};
+                                const entries = Array.isArray(info.entries) ? info.entries : [];
+                                const workedFlag = (info.worked === '1' || info.worked === 1 || entries.length > 0);
+
+                                // Date label (e.g. "01 Nov")
+                                const dateObj = new Date(dateIso);
+                                const dateLabel = dateObj.toLocaleDateString('en-GB', {
+                                    day: '2-digit',
+                                    month: 'short'
+                                });
+
+                                // Worked badge
+                                const workedBadge = workedFlag ?
+                                    '<span class="badge bg-success">Yes</span>' :
+                                    '<span class="badge bg-secondary">No</span>';
+
+                                // Entries details
+                                let entriesHtml = '';
+                                if (entries.length > 0) {
+                                    entriesHtml += '<table class="table table-sm table-bordered mb-0">';
+                                    entriesHtml += '<thead><tr><th>Shift</th><th>Hours</th><th>Platform</th><th>Unit</th></tr></thead><tbody>';
+                                    entries.forEach(e => {
+                                        const shift = (e?.shift_name || '—').toString();
+                                        const hours = parseFloat(e?.hours || 0).toFixed(2);
+                                        const platform = (e?.platform_name || '—').toString();
+                                        const unit = (e?.unit_name || '—').toString();
+                                        entriesHtml += `<tr><td>${shift}</td><td>${hours}</td><td>${platform}</td><td>${unit}</td></tr>`;
+                                    });
+                                    entriesHtml += '</tbody></table>';
+                                } else {
+                                    entriesHtml = '—';
+                                }
+
+                                html += `<tr>`;
+                                html += `<td>${dateLabel}</td>`;
+                                html += `<td>${workedBadge}</td>`;
+                                html += `<td>${entriesHtml}</td>`;
+                                html += `</tr>`;
+                            });
+                        }
+
+                        html += '</tbody></table></div>';
+                        content.html(html);
+                    },
+                    error: function() {
+                        content.html(
+                            '<div class="alert alert-danger">Failed to load worked days. Please try again.</div>'
+                        );
+                    }
+                });
+            });
+
             // Initialize DataTable for Approval Process Table
             let approvalProcessTable;
             if ($('#approvalProcessTable').length > 0) {
@@ -908,29 +931,54 @@
                 });
             }
 
-            // Year and Month filters for DataTable
-            let yearMonthFilter = null;
+            // Combined filters for DataTable (Status + Year + Month)
+            let combinedFilter = null;
 
-            function applyYearMonthFilter() {
+            function updateTableTitle() {
+                const status = $('#filterStatus').val();
+                const titleMap = {
+                    '': 'All Requests',
+                    'approved': 'Approved Requests',
+                    'pending': 'Pending Requests',
+                    'rejected': 'Rejected Requests'
+                };
+                $('#tableTitle').text(titleMap[status] || 'All Requests');
+            }
+
+            function applyAllFilters() {
                 // Remove existing filter if any
-                if (yearMonthFilter !== null) {
-                    const index = $.fn.dataTable.ext.search.indexOf(yearMonthFilter);
+                if (combinedFilter !== null) {
+                    const index = $.fn.dataTable.ext.search.indexOf(combinedFilter);
                     if (index !== -1) {
                         $.fn.dataTable.ext.search.splice(index, 1);
                     }
                 }
 
+                const status = $('#filterStatus').val();
                 const year = $('#filterYear').val();
                 const month = $('#filterMonth').val();
 
+                // Update title based on status
+                updateTableTitle();
+
                 // Only add filter if at least one is selected
-                if (year || month) {
-                    yearMonthFilter = function(settings, data, dataIndex) {
+                if (status || year || month) {
+                    combinedFilter = function(settings, data, dataIndex) {
                         if (settings.nTable.id !== 'approvalProcessTable') {
                             return true;
                         }
 
-                        // Get submitted date from column 3 (index 3) - after removing Claim Month and HR Approved On
+                        const row = $(approvalProcessTable.row(dataIndex).node());
+
+                        // Filter by status using data attribute
+                        if (status) {
+                            const rowStatus = row.data('status') || '';
+                            if (rowStatus !== status) {
+                                return false;
+                            }
+                        }
+
+                        // Get submitted date from column 3 (index 3)
                         const submittedOn = data[3] || '';
 
                         // Filter by year
@@ -953,9 +1001,9 @@
                         return true;
                     };
 
-                    $.fn.dataTable.ext.search.push(yearMonthFilter);
+                    $.fn.dataTable.ext.search.push(combinedFilter);
                 } else {
-                    yearMonthFilter = null;
+                    combinedFilter = null;
                 }
 
                 if (approvalProcessTable) {
@@ -963,7 +1011,7 @@
                 }
             }
 
-            $('#filterYear, #filterMonth').on('change', applyYearMonthFilter);
+            $('#filterStatus, #filterYear, #filterMonth').on('change', applyAllFilters);
 
             // Fill rejection modal when shown
             $('#rejectionModal').on('show.bs.modal', function(e) {
@@ -977,164 +1025,275 @@
                 $('#rejReason').text(btn.data('reason') || '—'); // <pre> preserves newlines
             });
 
-            // Initialize Monthly Trends Chart - Line Chart with Department Breakdown
+            // Quick filter buttons functionality
+            $('.quick-filter-btn').on('click', function() {
+                const filter = $(this).data('filter');
+                const now = new Date();
+                let fromYear, fromMonth, toYear, toMonth;
+
+                switch(filter) {
+                    case 'this_month':
+                        fromYear = toYear = now.getFullYear();
+                        fromMonth = toMonth = now.getMonth() + 1;
+                        break;
+                    case 'last_month':
+                        const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                        fromYear = toYear = lastMonth.getFullYear();
+                        fromMonth = toMonth = lastMonth.getMonth() + 1;
+                        break;
+                    case 'last_3_months':
+                        const threeMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+                        fromYear = threeMonthsAgo.getFullYear();
+                        fromMonth = threeMonthsAgo.getMonth() + 1;
+                        toYear = now.getFullYear();
+                        toMonth = now.getMonth() + 1;
+                        break;
+                    case 'this_year':
+                        fromYear = toYear = now.getFullYear();
+                        fromMonth = 1;
+                        toMonth = now.getMonth() + 1;
+                        break;
+                }
+
+                // Update form fields
+                $('#from_year').val(fromYear);
+                $('#from_month').val(fromMonth);
+                $('#to_year').val(toYear);
+                $('#to_month').val(toMonth);
+                $('#quick_filter').val(filter);
+
+                // Submit the form
+                $('#analyticsFilterForm').submit();
+            });
+
+            // Toggle between Summary and Monthly view
+            $('#viewSummary').on('click', function() {
+                $(this).addClass('active');
+                $('#viewMonthly').removeClass('active');
+                $('#summaryTableView').show();
+                $('#monthlyTableView').hide();
+            });
+
+            $('#viewMonthly').on('click', function() {
+                $(this).addClass('active');
+                $('#viewSummary').removeClass('active');
+                $('#summaryTableView').hide();
+                $('#monthlyTableView').show();
+            });
+
+            // Initialize Monthly Trends Chart - Colorful Bar Chart with Department Tooltip
             @if (isset($analytics['monthly_trends']) && !empty($analytics['monthly_trends']))
                 const monthlyTrends = @json($analytics['monthly_trends']);
                 const topDepts = @json($analytics['top_departments'] ?? []);
-                
-                // Prepare chart data
-                const monthLabels = Object.keys(monthlyTrends).map(key => monthlyTrends[key].label);
-                
-                // Create series for each top department
-                const series = topDepts.map(deptName => {
-                    const data = Object.keys(monthlyTrends).map(key => {
-                        return monthlyTrends[key].by_department[deptName] || 0;
-                    });
-                    return {
-                        name: deptName,
-                        data: data
-                    };
-                });
+                const deptTrends = @json($analytics['department_trends'] ?? []);
 
-                // Add total line
-                const totalData = Object.keys(monthlyTrends).map(key => {
-                    return monthlyTrends[key].amount / 1000; // Convert to thousands
-                });
-                series.push({
-                    name: 'Total',
-                    data: totalData,
-                    type: 'line',
-                    strokeWidth: 3
-                });
+                // Prepare data
+                const monthKeys = Object.keys(monthlyTrends);
+                const monthLabels = monthKeys.map(key => monthlyTrends[key].label);
+                const monthAmounts = monthKeys.map(key => monthlyTrends[key].amount);
+                const grandTotal = monthAmounts.reduce((a, b) => a + b, 0);
 
-                // Color palette for departments
-                const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#6366f1', '#f97316'];
-                
+                // Theme color
+                const themeColor = '#61ce70';
+                const deptDotColors = ['#61ce70','#4db85c','#3aa248','#278c34','#1cc88a','#45d87a','#5ce48a','#73ea9a','#8af0aa','#a1f6ba','#2ed86a','#17a65a'];
+
+                // Format TZS helper
+                function fmtTZS(v) {
+                    if (v >= 1000000) return 'TZS ' + (v / 1000000).toFixed(1) + 'M';
+                    if (v >= 1000) return 'TZS ' + (v / 1000).toFixed(0) + 'k';
+                    return 'TZS ' + v.toLocaleString();
+                }
+
+                // Show total above chart
+                $('#departmentTrendChart').before(
+                    '<div class="text-center mb-2"><span class="text-muted small">Total Cost:</span> <strong style="color:#1f2937;font-size:1.1rem;">TZS ' + grandTotal.toLocaleString('en-US') + '</strong></div>'
+                );
+
                 if ($('#departmentTrendChart').length > 0) {
                     const chartOptions = {
+                        series: [{
+                            name: 'Claims Cost',
+                            data: monthAmounts
+                        }],
                         chart: {
-                            height: 450,
-                            type: 'line',
-                            stacked: false,
-                            toolbar: {
-                                show: true,
-                                tools: {
-                                    download: true,
-                                    selection: true,
-                                    zoom: true,
-                                    zoomin: true,
-                                    zoomout: true,
-                                    pan: true,
-                                    reset: true
-                                }
-                            },
-                            animations: {
-                                enabled: true,
-                                easing: 'easeinout',
-                                speed: 800
+                            height: 380,
+                            type: 'bar',
+                            toolbar: { show: true, tools: { download: true, selection: false, zoom: false, zoomin: false, zoomout: false, pan: false, reset: false } },
+                            animations: { enabled: true, easing: 'easeinout', speed: 800 },
+                            fontFamily: 'inherit'
+                        },
+                        plotOptions: {
+                            bar: {
+                                columnWidth: '60%',
+                                borderRadius: 6,
+                                dataLabels: { position: 'top' }
                             }
                         },
-                        colors: colors,
-                        stroke: {
-                            width: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3],
-                            curve: 'smooth'
-                        },
+                        colors: [themeColor],
                         dataLabels: {
-                            enabled: false
+                            enabled: true,
+                            offsetY: -22,
+                            style: { fontSize: '12px', fontWeight: 700, colors: ['#1f2937'] },
+                            formatter: function(val) {
+                                if (val >= 1000000) return 'TZS ' + (val / 1000000).toFixed(1) + 'M';
+                                if (val >= 1000) return 'TZS ' + (val / 1000).toFixed(0) + 'k';
+                                return 'TZS ' + val;
+                            }
                         },
-                        series: series,
-                        markers: {
-                            size: 4,
-                            hover: {
-                                size: 6
+                        legend: { show: false },
+                        xaxis: {
+                            categories: monthLabels,
+                            labels: { style: { colors: '#4b5563', fontSize: '12px', fontWeight: 600 } },
+                            axisBorder: { show: false },
+                            axisTicks: { show: false }
+                        },
+                        yaxis: {
+                            labels: {
+                                style: { colors: '#9ca3af', fontSize: '11px' },
+                                formatter: function(val) { return fmtTZS(val); }
                             }
                         },
                         grid: {
-                            borderColor: '#e5e7eb',
+                            borderColor: '#f3f4f6',
                             strokeDashArray: 4,
-                            xaxis: {
-                                lines: {
-                                    show: true
-                                }
-                            },
-                            yaxis: {
-                                lines: {
-                                    show: true
-                                }
-                            }
-                        },
-                        xaxis: {
-                            categories: monthLabels,
-                            labels: {
-                                rotate: -45,
-                                rotateAlways: true,
-                                style: {
-                                    colors: '#6b7280',
-                                    fontSize: '11px'
-                                }
-                            },
-                            title: {
-                                text: 'Month',
-                                style: {
-                                    color: '#6b7280',
-                                    fontSize: '12px'
-                                }
-                            }
-                        },
-                        yaxis: {
-                            title: {
-                                text: 'Amount (TZS Thousands)',
-                                style: {
-                                    color: '#6b7280',
-                                    fontSize: '12px'
-                                }
-                            },
-                            labels: {
-                                style: {
-                                    colors: '#6b7280',
-                                    fontSize: '11px'
-                                },
-                                formatter: function(val) {
-                                    return val.toFixed(0) + 'K';
-                                }
-                            }
+                            yaxis: { lines: { show: true } },
+                            xaxis: { lines: { show: false } },
+                            padding: { top: 10 }
                         },
                         tooltip: {
-                            shared: true,
-                            intersect: false,
-                            style: {
-                                fontSize: '12px'
-                            },
-                            y: {
-                                formatter: function(val) {
-                                    return 'TZS ' + val.toLocaleString('en-US', {
-                                        minimumFractionDigits: 0,
-                                        maximumFractionDigits: 0
-                                    }) + 'K';
+                            custom: function({ series, seriesIndex, dataPointIndex, w }) {
+                                const monthKey = monthKeys[dataPointIndex];
+                                const monthData = monthlyTrends[monthKey];
+                                const total = monthData.amount;
+                                const count = monthData.count;
+                                const hours = monthData.hours;
+                                const byDept = monthData.by_department || {};
+
+                                let html = '<div style="padding:12px 16px;min-width:260px;font-family:inherit;">';
+                                html += '<div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#1f2937;">' + monthData.label + '</div>';
+                                html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #e5e7eb;">';
+                                html += '<span style="color:#6b7280;font-size:12px;">Total: <strong style="color:#1f2937;">TZS ' + total.toLocaleString() + '</strong></span>';
+                                html += '<span style="color:#6b7280;font-size:12px;margin-left:16px;">' + count + ' requests &middot; ' + hours + ' hrs</span>';
+                                html += '</div>';
+
+                                // Department breakdown sorted by amount desc
+                                const deptEntries = Object.entries(byDept).filter(([k, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+                                if (deptEntries.length > 0) {
+                                    html += '<div style="font-size:11px;color:#9ca3af;text-transform:uppercase;font-weight:600;margin-bottom:4px;">Department Breakdown</div>';
+                                    deptEntries.forEach(([dept, amtK], i) => {
+                                        const amt = amtK * 1000;
+                                        const pct = total > 0 ? ((amt / total) * 100).toFixed(0) : 0;
+                                        const c = deptDotColors[i % deptDotColors.length];
+                                        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px;">';
+                                        html += '<div style="display:flex;align-items:center;"><span style="width:8px;height:8px;border-radius:50%;background:' + c + ';display:inline-block;margin-right:6px;"></span><span style="color:#374151;">' + dept + '</span></div>';
+                                        html += '<div><strong style="color:#1f2937;">TZS ' + amt.toLocaleString() + '</strong> <span style="color:#9ca3af;font-size:10px;">(' + pct + '%)</span></div>';
+                                        html += '</div>';
+                                    });
+                                } else {
+                                    html += '<div style="color:#9ca3af;font-size:12px;">No department data</div>';
                                 }
-                            }
-                        },
-                        legend: {
-                            show: true,
-                            position: 'bottom',
-                            horizontalAlign: 'center',
-                            floating: false,
-                            fontSize: '11px',
-                            itemMargin: {
-                                horizontal: 10,
-                                vertical: 5
+                                html += '</div>';
+                                return html;
                             }
                         }
                     };
-                    const chart = new ApexCharts(document.querySelector('#departmentTrendChart'), chartOptions);
-                    chart.render();
+                    const trendChart = new ApexCharts(document.querySelector('#departmentTrendChart'), chartOptions);
+                    trendChart.render();
                 }
+
+                // Initialize sparklines for each department
+                Object.keys(deptTrends).forEach(function(deptName) {
+                    const sparklineId = '#sparkline-' + deptName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+                    if ($(sparklineId).length > 0) {
+                        // Get monthly data for this department
+                        const sparkData = Object.keys(monthlyTrends).map(key => {
+                            return (monthlyTrends[key].by_department[deptName] || 0) * 1000; // Convert back from K
+                        });
+
+                        const sparkOptions = {
+                            chart: {
+                                type: 'line',
+                                height: 25,
+                                width: 80,
+                                sparkline: {
+                                    enabled: true
+                                },
+                                animations: {
+                                    enabled: false
+                                }
+                            },
+                            series: [{
+                                data: sparkData
+                            }],
+                            stroke: {
+                                width: 2,
+                                curve: 'smooth'
+                            },
+                            colors: ['#10b981'],
+                            tooltip: {
+                                enabled: false
+                            }
+                        };
+
+                        const sparkChart = new ApexCharts($(sparklineId)[0], sparkOptions);
+                        sparkChart.render();
+                    }
+                });
             @else
-                // Show message if no data
                 if ($('#departmentTrendChart').length > 0) {
-                    $('#departmentTrendChart').html('<div class="text-center p-5 text-muted"><i class="fas fa-chart-line fa-3x mb-3"></i><p>No data available for the selected period</p></div>');
+                    $('#departmentTrendChart').html('<div class="text-center p-5 text-muted"><i class="fas fa-chart-bar fa-3x mb-3"></i><p>No data available for the selected period</p></div>');
                 }
             @endif
         });
     </script>
+
+    <style>
+        .sticky-col {
+            position: sticky;
+            left: 0;
+            background: #fff;
+            z-index: 1;
+        }
+        .quick-filter-btn {
+            padding: 0.4rem 1rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border-radius: 0;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            color: #495057;
+            transition: all 0.2s ease;
+        }
+        .quick-filter-btn:first-child {
+            border-radius: 6px 0 0 6px;
+        }
+        .quick-filter-btn:last-child {
+            border-radius: 0 6px 6px 0;
+        }
+        .quick-filter-btn:hover {
+            background-color: #e9ecef;
+            color: #333;
+            border-color: #adb5bd;
+        }
+        .quick-filter-btn.active {
+            background-color: #61ce70 !important;
+            color: #fff !important;
+            font-weight: 600;
+            border-color: #61ce70;
+            box-shadow: 0 2px 4px rgba(97,206,112,0.3);
+        }
+        #monthlyBreakdownTable {
+            font-size: 0.85rem;
+        }
+        #monthlyBreakdownTable th, #monthlyBreakdownTable td {
+            white-space: nowrap;
+        }
+        .card-header .form-select-sm {
+            font-size: 0.875rem;
+        }
+        .card-header label {
+            font-size: 0.8rem;
+            opacity: 0.95;
+        }
+    </style>
 @endsection

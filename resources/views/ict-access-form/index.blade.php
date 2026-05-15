@@ -221,12 +221,16 @@
                                             <select
                                                 class="form-control {{ $errors->has('active_drt') ? 'border-red-500' : '' }}"
                                                 id="active_drt" name="active_drt" required>
-                                                <option value="" disabled selected>--- Select Access Level ---
+                                                <option value="" disabled>--- Select Access Level ---
                                                 </option>
+                                                @php
+                                                    $defaultUserPrivilege = $privileges->firstWhere('prv_name', 'User');
+                                                    $defaultUserPrivilegeId = $defaultUserPrivilege && $defaultUserPrivilege->prv_status == 'active' && $defaultUserPrivilege->can_use_for_domain_access ? $defaultUserPrivilege->id : null;
+                                                @endphp
                                                 @foreach ($privileges as $privilege)
                                                     @if ($privilege->prv_status == 'active' && $privilege->can_use_for_domain_access)
                                                         <option value="{{ $privilege->id }}"
-                                                            {{ old('active_drt') == $privilege->id ? 'selected' : '' }}
+                                                            {{ old('active_drt', $defaultUserPrivilegeId) == $privilege->id ? 'selected' : '' }}
                                                             data-privilege-name="{{ $privilege->prv_name }}">
                                                             {{ $privilege->prv_name }}
                                                         </option>
@@ -276,12 +280,16 @@
                                             <select
                                                 class="form-control {{ $errors->has('email') ? 'border-red-500' : '' }}"
                                                 id="email" name="email">
-                                                <option value="" disabled selected>--- Select Access Level ---
+                                                <option value="" disabled>--- Select Access Level ---
                                                 </option>
+                                                @php
+                                                    $defaultUserPrivilegeEmail = $privileges->firstWhere('prv_name', 'User');
+                                                    $defaultUserPrivilegeEmailId = $defaultUserPrivilegeEmail && $defaultUserPrivilegeEmail->prv_status == 'active' && $defaultUserPrivilegeEmail->can_use_for_email_access ? $defaultUserPrivilegeEmail->id : null;
+                                                @endphp
                                                 @foreach ($privileges as $privilege)
                                                     @if ($privilege->prv_status == 'active' && $privilege->can_use_for_email_access)
                                                         <option value="{{ $privilege->id }}"
-                                                            {{ old('email') == $privilege->id ? 'selected' : '' }}>
+                                                            {{ old('email', $defaultUserPrivilegeEmailId) == $privilege->id ? 'selected' : '' }}>
                                                             {{ $privilege->prv_name }}
                                                         </option>
                                                     @endif
@@ -292,6 +300,19 @@
                                             @endif
                                             <small class="form-text text-muted">Access level for CCBRT email
                                                 account.</small>
+                                        </div>
+                                        <div class="form-group mt-3">
+                                            <label for="requested_email_address">Requested Email Address</label>
+                                            <input type="email" id="requested_email_address"
+                                                name="requested_email_address"
+                                                class="form-control {{ $errors->has('requested_email_address') ? 'border-red-500' : '' }}"
+                                                value="{{ old('requested_email_address') }}"
+                                                placeholder="e.g. firstname.lastname@ccbrt.org">
+                                            @if ($errors->has('requested_email_address'))
+                                                <span
+                                                    class="text-red-500 text-sm">{{ $errors->first('requested_email_address') }}</span>
+                                            @endif
+                                            <small class="form-text text-muted">Optional: specify the exact email address to create.</small>
                                         </div>
                                     </div>
                                 </div>
@@ -346,11 +367,25 @@
                                                                 {{ $folder->folder_name }}
                                                             </option>
                                                         @endforeach
+                                                        <option value="Other" {{ old('network_folder') == 'Other' ? 'selected' : '' }}>
+                                                            Other
+                                                        </option>
                                                     </select>
                                                     @if ($errors->has('network_folder'))
                                                         <span
                                                             class="text-red-500 text-sm">{{ $errors->first('network_folder') }}</span>
                                                     @endif
+                                                </div>
+
+                                                <div class="form-group mt-3" id="other_folder_container" style="display: none;">
+                                                    <label for="other_network_folder">Other folder</label>
+                                                    <input type="text" id="other_network_folder" name="other_network_folder"
+                                                        class="form-control {{ $errors->has('other_network_folder') ? 'border-red-500' : '' }}"
+                                                        value="{{ old('other_network_folder') }}" placeholder="Enter folder">
+                                                    @if ($errors->has('other_network_folder'))
+                                                        <span class="text-red-500 text-sm">{{ $errors->first('other_network_folder') }}</span>
+                                                    @endif
+                                                    <small class="form-text text-muted">Optional: specify the exact shared folder you want access to.</small>
                                                 </div>
                                             </div>
                                             <div class="col-md-6">
@@ -482,10 +517,14 @@
                                                 class="form-control {{ $errors->has('aruti') ? 'border-red-500' : '' }}"
                                                 id="aruti" name="aruti" required>
                                                 <option value="" disabled>--- Select an option ---</option>
+                                                @php
+                                                    $defaultUserAruti = isset($arutiLevels) ? $arutiLevels->firstWhere('aruti_name', 'User') : null;
+                                                    $defaultUserArutiId = $defaultUserAruti && $defaultUserAruti->aruti_status == 'active' ? $defaultUserAruti->id : null;
+                                                @endphp
                                                 @foreach ($arutiLevels as $arutiLevel)
                                                     @if ($arutiLevel->aruti_status == 'active')
                                                         <option value="{{ $arutiLevel->id }}"
-                                                            {{ old('aruti') == $arutiLevel->id ? 'selected' : '' }}>
+                                                            {{ old('aruti', $defaultUserArutiId) == $arutiLevel->id ? 'selected' : '' }}>
                                                             {{ $arutiLevel->aruti_name }}
                                                         </option>
                                                     @endif
@@ -589,11 +628,15 @@
                                             <label for="VPN">Network Access VPN</label>
                                             <select class="form-control {{ $errors->has('VPN') ? 'border-red-500' : '' }}"
                                                 id="VPN" name="VPN">
-                                                <option value="" disabled selected>--- Select an option ---</option>
+                                                <option value="" disabled>--- Select an option ---</option>
+                                                @php
+                                                    $defaultUserPrivilegeVPN = $privileges->firstWhere('prv_name', 'User');
+                                                    $defaultUserPrivilegeVPNId = $defaultUserPrivilegeVPN && $defaultUserPrivilegeVPN->prv_status == 'active' && $defaultUserPrivilegeVPN->can_use_for_vpn_access ? $defaultUserPrivilegeVPN->id : null;
+                                                @endphp
                                                 @foreach ($privileges as $privilege)
                                                     @if ($privilege->prv_status == 'active' && $privilege->can_use_for_vpn_access)
                                                         <option value="{{ $privilege->id }}"
-                                                            {{ old('VPN') == $privilege->id ? 'selected' : '' }}>
+                                                            {{ old('VPN', $defaultUserPrivilegeVPNId) == $privilege->id ? 'selected' : '' }}>
                                                             {{ $privilege->prv_name }}
                                                         </option>
                                                     @endif
@@ -690,11 +733,15 @@
                                             <select
                                                 class="form-control {{ $errors->has('pbax') ? 'border-red-500' : '' }}"
                                                 id="pbax" name="pbax">
-                                                <option value="" disabled selected>--- Select an option ---</option>
+                                                <option value="" disabled>--- Select an option ---</option>
+                                                @php
+                                                    $defaultUserPrivilegePBAX = $privileges->firstWhere('prv_name', 'User');
+                                                    $defaultUserPrivilegePBAXId = $defaultUserPrivilegePBAX && $defaultUserPrivilegePBAX->prv_status == 'active' && $defaultUserPrivilegePBAX->can_use_for_pbax_access ? $defaultUserPrivilegePBAX->id : null;
+                                                @endphp
                                                 @foreach ($privileges as $privilege)
                                                     @if ($privilege->prv_status == 'active' && $privilege->can_use_for_pbax_access)
                                                         <option value="{{ $privilege->id }}"
-                                                            {{ old('pbax') == $privilege->id ? 'selected' : '' }}>
+                                                            {{ old('pbax', $defaultUserPrivilegePBAXId) == $privilege->id ? 'selected' : '' }}>
                                                             {{ $privilege->prv_name }}
                                                         </option>
                                                     @endif
@@ -1187,6 +1234,29 @@
                         // Initialize Select2 for HMIS multi-select with enhanced features
                         try {
                             jQuery(document).ready(function($) {
+                                // Toggle "Other folder" input for Network Folder section
+                                function toggleOtherFolderInput() {
+                                    var enabled = $('#enable_network_folder').val() === '1';
+                                    var isOther = $('#network_folder').val() === 'Other';
+
+                                    if (enabled && isOther) {
+                                        $('#other_folder_container').show();
+                                    } else {
+                                        $('#other_folder_container').hide();
+                                        if (!isOther) {
+                                            $('#other_network_folder').val('');
+                                        }
+                                    }
+                                }
+
+                                if ($('#network_folder').length && $('#other_folder_container').length) {
+                                    toggleOtherFolderInput();
+                                    $('#network_folder').on('change', toggleOtherFolderInput);
+                                    $('#enable_network_folder_yes, #enable_network_folder_no').on('change', function() {
+                                        setTimeout(toggleOtherFolderInput, 0);
+                                    });
+                                }
+
                                 if ($('#hmisId').length) {
                                     // First, ensure no options are selected by default (unless from old values)
                                     var hasOldValues =
@@ -1343,6 +1413,26 @@
 
                 // Handle radio button toggles for optional sections
                 document.addEventListener('DOMContentLoaded', function() {
+                    // Helper function to set default "User" value for select fields
+                    function setDefaultUserValue(selectElement) {
+                        if (!selectElement || selectElement.tagName !== 'SELECT') return;
+                        
+                        // Check if select already has a value (from old input or previous selection)
+                        if (selectElement.value && selectElement.value !== '') return;
+                        
+                        // Find the "User" option
+                        const userOption = Array.from(selectElement.options).find(option => {
+                            const optionText = option.textContent.trim();
+                            return optionText === 'User' || optionText.toLowerCase() === 'user';
+                        });
+                        
+                        if (userOption && userOption.value) {
+                            selectElement.value = userOption.value;
+                            // Trigger change event to ensure any listeners are notified
+                            selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }
+
                     function updateSectionState(hiddenInputId, sectionId, isEnabled) {
                         const hiddenInput = document.getElementById(hiddenInputId);
                         const section = document.getElementById(sectionId);
@@ -1353,6 +1443,16 @@
                                 const inputs = section.querySelectorAll('input, select, textarea');
                                 inputs.forEach(input => {
                                     input.removeAttribute('disabled');
+                                    
+                                    // Set default "User" value for specific select fields
+                                    if (input.tagName === 'SELECT' && !input.hasAttribute('multiple')) {
+                                        const selectId = input.id;
+                                        // Fields that should default to "User"
+                                        if (['active_drt', 'email', 'aruti', 'VPN', 'pbax'].includes(selectId)) {
+                                            setDefaultUserValue(input);
+                                        }
+                                    }
+                                    
                                     const label = section.querySelector(`label[for="${input.id}"]`);
                                     if (label && label.innerHTML.includes('*')) {
                                         // For radio buttons with the same name, only require one
@@ -1446,6 +1546,21 @@
                             const isEnabled = checkedRadio.value === '1';
                             group.hiddenInput.value = checkedRadio.value;
                             updateSectionState(targetId, group.sectionId, isEnabled);
+                            
+                            // If section is enabled on page load, set default "User" values
+                            if (isEnabled) {
+                                setTimeout(() => {
+                                    const section = document.getElementById(group.sectionId);
+                                    if (section) {
+                                        const selectFields = section.querySelectorAll('select:not([multiple])');
+                                        selectFields.forEach(select => {
+                                            if (['active_drt', 'email', 'aruti', 'VPN', 'pbax'].includes(select.id)) {
+                                                setDefaultUserValue(select);
+                                            }
+                                        });
+                                    }
+                                }, 100);
+                            }
                         } else if (group.hiddenInput) {
                             // If no radio is checked, default to disabled
                             const noRadio = group.radios.find(r => r.value === '0');

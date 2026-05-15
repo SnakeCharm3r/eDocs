@@ -18,10 +18,10 @@
     .info-card { background: #f8faf9; border: 1px solid #d8ede1; border-radius: 8px; margin: 24px 0; overflow: hidden; }
     .info-card-header { background: #007A33; padding: 10px 18px; }
     .info-card-header span { color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
-    .info-row { display: flex; justify-content: space-between; padding: 11px 18px; border-bottom: 1px solid #e4ede8; }
+    .info-row { display: table; width: 100%; table-layout: fixed; padding: 11px 18px; border-bottom: 1px solid #e4ede8; }
     .info-row:last-child { border-bottom: none; }
-    .info-label { font-weight: 600; color: #555; font-size: 14px; }
-    .info-value { color: #222; font-size: 14px; text-align: right; max-width: 60%; word-break: break-word; }
+    .info-label { font-weight: 600; color: #555; font-size: 14px; display: table-cell; width: 40%; vertical-align: top; }
+    .info-value { color: #222; font-size: 14px; text-align: right; display: table-cell; width: 60%; word-break: break-word; vertical-align: top; }
     .button-container { text-align: center; margin: 28px 0 8px; }
     .action-button { display: inline-block; background-color: #007A33; color: #fff !important; text-decoration: none; padding: 13px 34px; border-radius: 6px; font-weight: 700; font-size: 15px; }
     .signature { margin-top: 28px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #555; font-size: 14px; }
@@ -29,8 +29,9 @@
     @media (max-width: 600px) {
       .content { padding: 24px 18px; }
       .email-header { padding: 22px 18px; }
-      .info-row { flex-direction: column; gap: 4px; }
-      .info-value { text-align: left; max-width: 100%; }
+      .info-row { display: block; }
+      .info-label { display: block; width: 100%; }
+      .info-value { display: block; text-align: left; width: 100%; margin-top: 4px; }
       .action-button { display: block; text-align: center; }
     }
   </style>

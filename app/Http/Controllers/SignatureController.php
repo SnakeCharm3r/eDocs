@@ -70,6 +70,12 @@ class SignatureController extends Controller
 
             // Save the signature to the user's signature column
             $user->signature = $signatureData;
+
+            // Use the date the user signed as their joining date (starting_date) if not already set
+            if (empty($user->starting_date)) {
+                $user->starting_date = now()->format('Y-m-d');
+            }
+
             $user->save();
 
             return redirect()->route('profile.confirm')->with('success', 'Signature saved successfully!');
@@ -253,7 +259,7 @@ class SignatureController extends Controller
 
     public function showHrForm($id)
     {
-        $user = User::with('jobTitle')->where('users.id', $id)->first();
+        $user = User::with(['jobTitle', 'department'])->where('users.id', $id)->first();
 
         if (!$user) {
             return redirect()->route('requestapprove.index')->with('error', 'User not found.');
@@ -299,12 +305,22 @@ class SignatureController extends Controller
                 $approvedHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
                     ->where('status', 1) // Approved
                     ->whereNotNull('who_approve')
-                    ->with('approver')
+                    ->with(['approver.jobTitle', 'approver.roles', 'attendedBy.jobTitle', 'attendedBy.roles'])
                     ->orderBy('updated_at', 'desc')
                     ->first();
 
-                if ($approvedHistory && $approvedHistory->approver) {
-                    $approver = $approvedHistory->approver;
+                if ($approvedHistory) {
+                    // Prefer who_approve (HR who clicked approve); fall back to attended_by
+                    // Also skip if who_approve is the same person as the form owner (self-approval anomaly)
+                    $hrActor = $approvedHistory->approver;
+                    if (!$hrActor || $hrActor->id == $id) {
+                        $hrActor = $approvedHistory->attendedBy;
+                    }
+                    if ($hrActor && $hrActor->id != $id) {
+                        $approver = $hrActor;
+                    } elseif ($approvedHistory->approver) {
+                        $approver = $approvedHistory->approver; // keep even if same as user
+                    }
                     $approvalDate = $approvedHistory->updated_at;
                 }
             }
@@ -741,41 +757,71 @@ class SignatureController extends Controller
 
     public function showBankForm(Request $request)
     {
-        $user = Auth::user();;
-        //Vuta data kwenyer DB
+        $user = Auth::user();
+        $isReportViewer = $user->can('ict_acces_report');
+        
+        // Get the workflow first
+        $workflow = Workflow::where('bank_form', $request->id)->first();
+        
+        if (!$workflow) {
+            return redirect()->route('requestapprove.index')->with('error', 'Bank form not found.');
+        }
+
+        // Get bank form details with user info
         $bankForm = BankDetail::join('users', 'users.id', '=', 'bank_details.userId')
-            ->join('workflows', 'workflows.bank_form', '=', 'bank_details.id')
-            ->join('work_flow_histories', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
             ->where('bank_details.id', $request->id)
-            ->where('work_flow_histories.attended_by', $user->id)
             ->first([
                 'bank_details.*',
                 'users.*',
-                'work_flow_histories.*',
-                'bank_details.id as access_id',
-                'work_flow_histories.forwarded_by'
+                'bank_details.id as access_id'
             ]);
-        //    dd($bankForm);
 
-        $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
-            ->whereHas('roles', function ($query) {
-                $query->where('name', 'hr');
-            })
-            ->where('work_flow_histories.work_flow_id', $bankForm->work_flow_id)
-            ->where('work_flow_histories.status', 1)
-            ->orderBy('work_flow_histories.updated_at', 'desc')
-            ->select('users.*', 'work_flow_histories.updated_at')
+        if (!$bankForm) {
+            return redirect()->route('requestapprove.index')->with('error', 'Bank form not found.');
+        }
+
+        // Check if workflow is completed (approved)
+        $isApproved = $workflow->work_flow_completed == 1;
+
+        // Get the HR who approved it (if approved)
+        $HrToApprove = null;
+        if ($isApproved) {
+            $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+                ->whereHas('roles', function ($query) {
+                    $query->where('name', 'hr');
+                })
+                ->where('work_flow_histories.work_flow_id', $workflow->id)
+                ->where('work_flow_histories.status', 1)
+                ->orderBy('work_flow_histories.updated_at', 'desc')
+                ->select('users.*', 'work_flow_histories.updated_at')
+                ->first();
+        }
+
+        // Check if current user is HR and can view this form
+        $isHR = $user->hasRole('hr');
+        if (!$isHR && !$isReportViewer) {
+            return redirect()->route('requestapprove.index')->with('error', 'You do not have permission to view this form.');
+        }
+
+        // Check if current user has a pending workflow history for this form
+        $currentUserWorkflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('attended_by', $user->id)
             ->first();
 
-        // $HrToApprove = User::whereHas('roles', function ($query) {
-        //     $query->where('name', 'hr');
-        // })
-        //     ->join('work_flow_histories', 'work_flow_histories.attended_by', '=', 'users.id')
-        //     ->where('work_flow_histories.work_flow_id', $bankForm->work_flow_id)
-        //     ->where('work_flow_histories.status', 1)
-        //     ->first();
+        // If not approved and current user doesn't have a workflow history, create one for viewing
+        if (!$isApproved && !$currentUserWorkflowHistory && !$isReportViewer) {
+            // Check if there are any pending workflow histories
+            $hasPendingHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->exists();
+            
+            // If no pending history exists, it means it might have been rejected or something else
+            if (!$hasPendingHistory) {
+                return redirect()->route('requestapprove.index')->with('error', 'This form is no longer available for approval.');
+            }
+        }
 
-        return view('profile.bank_confirm', compact('user', 'bankForm', 'HrToApprove'));
+        return view('profile.bank_confirm', compact('user', 'bankForm', 'HrToApprove', 'isApproved', 'workflow'));
     }
 
     public function approveBankForm(Request $request)
@@ -818,29 +864,32 @@ class SignatureController extends Controller
 
     public function rejectBankForm(Request $request)
     {
-        // dd($request);
         $workflow = Workflow::where('bank_form', $request->access_id)->first();
-        // dd($workflow);
-        if ($workflow) {
-            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+        if (!$workflow) {
+            return response()->json(['error' => "Workflow not found for access ID {$request->access_id}"], 404);
+        }
+
+        $pendingCount = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('status', 0)
+            ->count();
+
+        if ($pendingCount > 0) {
+            // Update ALL pending history rows to rejected
+            WorkFlowHistory::where('work_flow_id', $workflow->id)
                 ->where('status', 0)
-                ->first();
+                ->update([
+                    'status' => -1,
+                    'attended_by' => Auth::user()->id,
+                    'rejection_reason' => $request->reason,
+                    'decision_date' => now()->format('Y-m-d'),
+                ]);
 
-            if ($workflowHistory) {
-                // Update the status to rejected and save the reason
-                $workflowHistory->status = -1;
-                $workflowHistory->attended_by = Auth::user()->id;
-                $workflowHistory->rejection_reason = $request->reason;
-                $workflowHistory->save();
-                // dd($workflowHistory);
+            $workflow->work_flow_status = 'Bank Form Rejected';
+            $workflow->save();
 
-            } else {
-                // Handle case where no WorkflowHistory is found
-                dd("WorkflowHistory not found for Workflow ID {$workflow->id} and status 0");
-            }
+            return response()->json(['message' => 'Bank Form rejected successfully.', 'workflow' => $workflow]);
         } else {
-            // Handle case where no Workflow is found
-            dd("Workflow not found for access ID {$request->access_id}");
+            return response()->json(['error' => "No pending approval found for Workflow ID {$workflow->id}"], 404);
         }
     }
 
@@ -848,39 +897,102 @@ class SignatureController extends Controller
     public function showHeslbkForm(Request $request)
     {
         $user = Auth::user();
+        $isReportViewer = $user->can('ict_acces_report');
+        
+        // Get the workflow first
+        $workflow = Workflow::where('heslb_form', $request->id)->first();
+        
+        if (!$workflow) {
+            return redirect()->route('requestapprove.index')->with('error', 'HESLB form not found.');
+        }
 
+        // Get HESLB form details with user info
         $heslbForm = LoanDeclaration::join('users', 'users.id', '=', 'loan_declarations.userId')
-            ->join('workflows', 'workflows.heslb_form', '=', 'loan_declarations.id')
-            ->join('work_flow_histories', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
             ->where('loan_declarations.id', $request->id)
-            ->where('work_flow_histories.attended_by', $user->id)
             ->first([
                 'loan_declarations.*',
                 'users.*',
-                'work_flow_histories.*',
-                'loan_declarations.id as access_id',
-                'work_flow_histories.forwarded_by'
+                'loan_declarations.id as access_id'
             ]);
 
-        $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
-            ->whereHas('roles', function ($query) {
-                $query->where('name', 'hr');
-            })
-            ->where('work_flow_histories.work_flow_id', $heslbForm->work_flow_id)
-            ->where('work_flow_histories.status', 1)
-            ->orderBy('work_flow_histories.updated_at', 'desc')
-            ->select('users.*', 'work_flow_histories.updated_at')
+        if (!$heslbForm) {
+            return redirect()->route('requestapprove.index')->with('error', 'HESLB form not found.');
+        }
+
+        // Check if workflow is completed (approved)
+        $isApproved = $workflow->work_flow_completed == 1;
+
+        // Check if form is rejected
+        $isRejected = false;
+        $rejectedBy = null;
+        $rejectionReason = null;
+        $rejectedAt = null;
+
+        // Check for rejection in workflow history
+        $rejectedHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('status', -1)
             ->first();
 
-        // $HrToApprove = User::whereHas('roles', function ($query) {
-        //     $query->where('name', 'hr');
-        // })
-        //     ->join('work_flow_histories', 'work_flow_histories.attended_by', '=', 'users.id')
-        //     ->where('work_flow_histories.work_flow_id', $heslbForm->work_flow_id)
-        //     ->where('work_flow_histories.status', 1)
-        //     ->first();
+        if ($rejectedHistory) {
+            $isRejected = true;
+            $rejectionReason = $rejectedHistory->rejection_reason;
+            $rejectedAt = $rejectedHistory->updated_at;
+            
+            // Get who rejected it
+            if ($rejectedHistory->attended_by) {
+                $rejectedBy = User::find($rejectedHistory->attended_by);
+            }
+        }
 
-        return view('profile.heslb_confirm', compact('user', 'heslbForm', 'HrToApprove'));
+        // Get the HR who approved it, or the assigned HR officer if still pending
+        $HrToApprove = null;
+        if ($isApproved) {
+            $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+                ->whereHas('roles', function ($query) {
+                    $query->where('name', 'hr');
+                })
+                ->where('work_flow_histories.work_flow_id', $workflow->id)
+                ->where('work_flow_histories.status', 1)
+                ->orderBy('work_flow_histories.updated_at', 'desc')
+                ->select('users.*', 'work_flow_histories.updated_at')
+                ->first();
+        } else {
+            // Show the assigned HR officer even if not yet approved
+            $hrHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->whereHas('attendedBy', function ($q) {
+                    $q->role('hr');
+                })
+                ->first();
+            if ($hrHistory && $hrHistory->attended_by) {
+                $HrToApprove = User::find($hrHistory->attended_by);
+            }
+        }
+
+        // Check if current user is HR and can view this form
+        $isHR = $user->hasRole('hr');
+        if (!$isHR && !$isReportViewer) {
+            return redirect()->route('requestapprove.index')->with('error', 'You do not have permission to view this form.');
+        }
+
+        // Check if current user has a pending workflow history for this form
+        $currentUserWorkflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('attended_by', $user->id)
+            ->first();
+
+        // If not approved, not rejected, and current user doesn't have a workflow history
+        if (!$isApproved && !$isRejected && !$currentUserWorkflowHistory && !$isReportViewer) {
+            // Check if there are any pending workflow histories
+            $hasPendingHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->exists();
+            
+            // If no pending history exists, it means it might have been rejected or something else
+            if (!$hasPendingHistory) {
+                return redirect()->route('requestapprove.index')->with('error', 'This form is no longer available for approval.');
+            }
+        }
+
+        return view('profile.heslb_confirm', compact('user', 'heslbForm', 'HrToApprove', 'isApproved', 'isRejected', 'rejectedBy', 'rejectionReason', 'rejectedAt', 'workflow'));
     }
 
     public function approveHeslbForm(Request $request)
@@ -916,75 +1028,118 @@ class SignatureController extends Controller
         }
 
         return response()->json([
-            'message' => 'NHIF Form confirmed successfully .',
+            'message' => 'HESLB Form confirmed successfully for all HRs.',
             'workflow' => $workflow,
         ]);
     }
 
     public function rejectHeslbForm(Request $request)
     {
-        // dd($request);
         $workflow = Workflow::where('heslb_form', $request->access_id)->first();
-        // dd($workflow);
-        if ($workflow) {
-            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+        
+        if (!$workflow) {
+            return response()->json([
+                'error' => "Workflow not found for access ID {$request->access_id}"
+            ], 404);
+        }
+
+        $pendingCount = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('status', 0)
+            ->count();
+
+        if ($pendingCount > 0) {
+            // Update ALL pending history rows to rejected
+            WorkFlowHistory::where('work_flow_id', $workflow->id)
                 ->where('status', 0)
-                ->first();
+                ->update([
+                    'status' => -1,
+                    'attended_by' => Auth::user()->id,
+                    'rejection_reason' => $request->comment ?? $request->reason,
+                    'decision_date' => now()->format('Y-m-d'),
+                ]);
 
-            if ($workflowHistory) {
-                // Update the status to rejected and save the reason
-                $workflowHistory->status = -1;
-                $workflowHistory->attended_by = Auth::user()->id;
-                $workflowHistory->rejection_reason = $request->reason;
-                $workflowHistory->save();
-                // dd($workflowHistory);
+            // Update workflow status
+            $workflow->work_flow_status = 'HESLB Form Rejected';
+            $workflow->save();
 
-            } else {
-                // Handle case where no WorkflowHistory is found
-                dd("WorkflowHistory not found for Workflow ID {$workflow->id} and status 0");
-            }
+            return response()->json([
+                'message' => 'HESLB Form rejected successfully.',
+                'workflow' => $workflow,
+            ]);
         } else {
-            // Handle case where no Workflow is found
-            dd("Workflow not found for access ID {$request->access_id}");
+            return response()->json([
+                'error' => "WorkflowHistory not found for Workflow ID {$workflow->id} with pending status."
+            ], 404);
         }
     }
 
     public function showNhifForm(Request $request)
     {
         $user = Auth::user();
+        $isReportViewer = $user->can('ict_acces_report');
+        
+        // Get the workflow first
+        $workflow = Workflow::where('nhif_form', $request->id)->first();
+        
+        if (!$workflow) {
+            return redirect()->route('requestapprove.index')->with('error', 'NHIF form not found.');
+        }
 
+        // Get NHIF form details with user info
         $nhifForm = NhifRegistration::join('users', 'users.id', '=', 'nhif_registrations.userId')
-            ->join('workflows', 'workflows.nhif_form', '=', 'nhif_registrations.id')
-            ->join('work_flow_histories', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
             ->where('nhif_registrations.id', $request->id)
-            ->where('work_flow_histories.attended_by', $user->id)
             ->first([
                 'nhif_registrations.*',
                 'users.*',
-                'work_flow_histories.*',
-                'nhif_registrations.id as access_id',
-                'work_flow_histories.forwarded_by'
+                'nhif_registrations.id as access_id'
             ]);
 
-        $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
-            ->whereHas('roles', function ($query) {
-                $query->where('name', 'hr');
-            })
-            ->where('work_flow_histories.work_flow_id', $nhifForm->work_flow_id)
-            ->where('work_flow_histories.status', 1)
-            ->orderBy('work_flow_histories.updated_at', 'desc')
-            ->select('users.*', 'work_flow_histories.updated_at')
+        if (!$nhifForm) {
+            return redirect()->route('requestapprove.index')->with('error', 'NHIF form not found.');
+        }
+
+        // Check if workflow is completed (approved)
+        $isApproved = $workflow->work_flow_completed == 1;
+
+        // Get the HR who approved it (if approved)
+        $HrToApprove = null;
+        if ($isApproved) {
+            $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+                ->whereHas('roles', function ($query) {
+                    $query->where('name', 'hr');
+                })
+                ->where('work_flow_histories.work_flow_id', $workflow->id)
+                ->where('work_flow_histories.status', 1)
+                ->orderBy('work_flow_histories.updated_at', 'desc')
+                ->select('users.*', 'work_flow_histories.updated_at')
+                ->first();
+        }
+
+        // Check if current user is HR and can view this form
+        $isHR = $user->hasRole('hr');
+        if (!$isHR && !$isReportViewer) {
+            return redirect()->route('requestapprove.index')->with('error', 'You do not have permission to view this form.');
+        }
+
+        // Check if current user has a pending workflow history for this form
+        $currentUserWorkflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('attended_by', $user->id)
             ->first();
 
-        // $HrToApprove = User::whereHas('roles', function ($query) {
-        //     $query->where('name', 'hr');
-        // })
-        //     ->join('work_flow_histories', 'work_flow_histories.attended_by', '=', 'users.id')
-        //     ->where('work_flow_histories.work_flow_id', $nhifForm->work_flow_id)
-        //     ->where('work_flow_histories.status', 1)
-        //     ->first();
+        // If not approved and current user doesn't have a workflow history, create one for viewing
+        if (!$isApproved && !$currentUserWorkflowHistory && !$isReportViewer) {
+            // Check if there are any pending workflow histories
+            $hasPendingHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->exists();
+            
+            // If no pending history exists, it means it might have been rejected or something else
+            if (!$hasPendingHistory) {
+                return redirect()->route('requestapprove.index')->with('error', 'This form is no longer available for approval.');
+            }
+        }
 
-        return view('profile.nhif_confirm', compact('user', 'nhifForm', 'HrToApprove'));
+        return view('profile.nhif_confirm', compact('user', 'nhifForm', 'HrToApprove', 'isApproved', 'workflow'));
     }
 
     public function approveNhifForm(Request $request)
@@ -1027,80 +1182,94 @@ class SignatureController extends Controller
 
     public function rejectNhifForm(Request $request)
     {
-        // dd($request);
         $workflow = Workflow::where('nhif_form', $request->access_id)->first();
-        // dd($workflow);
-        if ($workflow) {
-            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+        if (!$workflow) {
+            return response()->json(['error' => "Workflow not found for access ID {$request->access_id}"], 404);
+        }
+
+        $pendingCount = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('status', 0)
+            ->count();
+
+        if ($pendingCount > 0) {
+            // Update ALL pending history rows to rejected
+            WorkFlowHistory::where('work_flow_id', $workflow->id)
                 ->where('status', 0)
-                ->first();
+                ->update([
+                    'status' => -1,
+                    'attended_by' => Auth::user()->id,
+                    'rejection_reason' => $request->reason,
+                    'decision_date' => now()->format('Y-m-d'),
+                ]);
 
-            if ($workflowHistory) {
-                // Update the status to rejected and save the reason
-                $workflowHistory->status = -1;
-                $workflowHistory->attended_by = Auth::user()->id;
-                $workflowHistory->rejection_reason = $request->reason;
-                $workflowHistory->save();
-                // dd($workflowHistory);
+            $workflow->work_flow_status = 'NHIF Form Rejected';
+            $workflow->save();
 
-            } else {
-                // Handle case where no WorkflowHistory is found
-                dd("WorkflowHistory not found for Workflow ID {$workflow->id} and status 0");
-            }
+            return response()->json(['message' => 'NHIF Form rejected successfully.', 'workflow' => $workflow]);
         } else {
-            // Handle case where no Workflow is found
-            dd("Workflow not found for access ID {$request->access_id}");
+            return response()->json(['error' => "No pending approval found for Workflow ID {$workflow->id}"], 404);
         }
     }
 
     public function showIdform(Request $request)
     {
         $user = Auth::user();
+        $isReportViewer = $user->can('ict_acces_report');
 
+        // Get the workflow first
+        $workflow = Workflow::where('id_form', $request->id)->first();
+
+        if (!$workflow) {
+            return redirect()->route('requestapprove.index')->with('error', 'ID card form not found.');
+        }
+
+        // Get ID form details with user info (no workflow history join)
         $idForm = IDCards::join('users', 'users.id', '=', 'id_card_requests.user_id')
-            ->join('workflows', 'workflows.id_form', '=', 'id_card_requests.id')
-            ->join('work_flow_histories', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
             ->where('id_card_requests.id', $request->id)
-            ->where('work_flow_histories.attended_by', $user->id)
             ->first([
                 'id_card_requests.*',
                 'users.*',
-                'work_flow_histories.*',
-                'id_card_requests.id as access_id',
-                'work_flow_histories.forwarded_by'
+                'id_card_requests.id as access_id'
             ]);
 
+        if (!$idForm) {
+            return redirect()->route('requestapprove.index')->with('error', 'ID card form not found.');
+        }
 
+        // Get the HR who approved it
         $HrToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
             ->whereHas('roles', function ($query) {
                 $query->where('name', 'hr');
             })
-            ->where('work_flow_histories.work_flow_id', $idForm->work_flow_id)
+            ->where('work_flow_histories.work_flow_id', $workflow->id)
             ->where('work_flow_histories.status', 1)
             ->orderBy('work_flow_histories.updated_at', 'desc')
             ->select('users.*', 'work_flow_histories.updated_at')
             ->first();
 
-        $ItToApprove = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
-            ->whereHas('roles', function ($query) {
-                $query->where('name', 'it');
-            })
-            ->where('work_flow_histories.work_flow_id', $idForm->work_flow_id)
-            ->where('work_flow_histories.status', 1)
-            ->orderBy('work_flow_histories.updated_at', 'desc')
-            ->select('users.*', 'work_flow_histories.updated_at')
-            ->first();
+        // ID form only requires HR approval — if HR approved, it's done
+        // Also fix old workflows stuck at "Pending IT Approval" from the old flow
+        $isApproved = $workflow->work_flow_completed == 1;
+        if (!$isApproved && $HrToApprove) {
+            $workflow->work_flow_completed = 1;
+            $workflow->work_flow_status = 'ID Form Confirmed';
+            $workflow->save();
 
+            // Mark ALL remaining pending workflow histories (HR and IT) as completed
+            WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->update(['status' => 1, 'decision_date' => now()->format('Y-m-d')]);
 
-        // $HrToApprove = User::whereHas('roles', function ($query) {
-        //     $query->where('name', 'hr');
-        // })
-        //     ->join('work_flow_histories', 'work_flow_histories.attended_by', '=', 'users.id')
-        //     ->where('work_flow_histories.work_flow_id', $idForm->work_flow_id)
-        //     ->where('work_flow_histories.status', 1)
-        //     ->first();
+            $isApproved = true;
+        }
 
-        return view('profile.IDCard_confirm', compact('user', 'idForm', 'HrToApprove', 'ItToApprove'));
+        // Check permission: must be HR or report viewer
+        $isHR = $user->hasRole('hr');
+        if (!$isHR && !$isReportViewer) {
+            return redirect()->route('requestapprove.index')->with('error', 'You do not have permission to view this form.');
+        }
+
+        return view('profile.IDCard_confirm', compact('user', 'idForm', 'HrToApprove', 'isApproved', 'workflow'));
     }
 
 
@@ -1113,40 +1282,36 @@ class SignatureController extends Controller
         }
 
         $user = Auth::user();
-        $roles = $user->getRoleNames()->first();
 
-        // Check if user has appropriate role
-        if (!in_array($roles, ['hr', 'it'])) {
-            return response()->json(['error' => 'Unauthorized: User does not have HR or IT role'], 403);
+        // Check if user has HR role
+        if (!$user->hasRole('hr')) {
+            return response()->json(['error' => 'Unauthorized: User does not have HR role'], 403);
         }
 
-        // Check if there's a pending approval for the current role
-        $pendingApprovals = WorkflowHistory::where('work_flow_id', $workflow->id)
+        // Check if there's a pending approval for HR
+        $hrUserIds = User::role('hr')->pluck('id')->toArray();
+        
+        $pendingApprovals = WorkFlowHistory::where('work_flow_id', $workflow->id)
             ->where('status', 0)
-            ->whereHas('user.roles', function ($query) use ($roles) {
-                $query->where('name', $roles);
-            })
+            ->whereIn('attended_by', $hrUserIds)
             ->get();
 
         if ($pendingApprovals->isEmpty()) {
-            // Check if any approval exists for the current role
-            $hasApproved = WorkflowHistory::where('work_flow_id', $workflow->id)
+            $hasApproved = WorkFlowHistory::where('work_flow_id', $workflow->id)
                 ->where('status', 1)
-                ->whereHas('user.roles', function ($query) use ($roles) {
-                    $query->where('name', $roles);
-                })
+                ->whereIn('attended_by', $hrUserIds)
                 ->exists();
 
             if ($hasApproved) {
                 return response()->json([
-                    'message' => "Approval for {$roles} role already completed",
+                    'message' => 'ID Form has already been approved',
                     'workflow' => $workflow,
                     'current_status' => $workflow->work_flow_status
                 ]);
             }
 
             return response()->json([
-                'error' => "No pending approval found for {$roles} role"
+                'error' => 'No pending approval found for HR'
             ], 404);
         }
 
@@ -1161,74 +1326,25 @@ class SignatureController extends Controller
             return response()->json(['error' => 'Forward user not found'], 404);
         }
 
-        DB::transaction(function () use ($pendingApprovals, $workflow, $user, $roles, $forwardUser) {
-            // Mark all pending approvals for the current role as approved
-            foreach ($pendingApprovals as $workflowHistory) {
-                $workflowHistory->status = 1;
-                $workflowHistory->who_approve = $user->id;
-                $workflowHistory->save();
-            }
+        DB::transaction(function () use ($pendingApprovals, $workflow, $user, $forwardUser, $hrUserIds) {
+            // Mark ALL pending HR approvals as approved
+            WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->whereIn('attended_by', $hrUserIds)
+                ->update([
+                    'status' => 1,
+                    'who_approve' => $user->id,
+                    'decision_date' => now()->format('Y-m-d'),
+                ]);
 
-            // If HR is approving, create approval entries for all IT users if not already created
-            if ($roles === 'hr') {
-                // Check if IT approvals already exist
-                $existingItApprovals = WorkflowHistory::where('work_flow_id', $workflow->id)
-                    ->whereHas('user.roles', function ($query) {
-                        $query->where('name', 'it');
-                    })
-                    ->exists();
-
-                if (!$existingItApprovals) {
-                    $itUsers = User::whereHas('roles', function ($query) {
-                        $query->where('name', 'it');
-                    })->get();
-
-                    if ($itUsers->isEmpty()) {
-                        Log::error('No IT users found for workflow ID ' . $workflow->id);
-                        throw new \Exception('No IT users found for approval');
-                    }
-
-                    // Create WorkflowHistory entries for IT users
-                    foreach ($itUsers as $itUser) {
-                        WorkflowHistory::create([
-                            'work_flow_id' => $workflow->id,
-                            'attended_by' => $itUser->id,
-                            'status' => 0
-                        ]);
-                    }
-
-                    // Send notification to all IT users
-                    $requestDetails = [
-                        'forwarded_by' => $forwardUser->fname,
-                        'request' => "ID Card Form",
-                        'requestDate' => Carbon::now()->format('d F Y'),
-                    ];
-
-                    foreach ($itUsers as $itUser) {
-                        try {
-                            $mail = new ApprovalRequestNotification($itUser, $itUser);
-                            $mail->approver = $itUser;
-                            $mail->requestDetails = $requestDetails;
-                            Mail::to($itUser->email)->send($mail);
-                            Log::info('Notification sent to IT user ' . $itUser->email . ' for workflow ID ' . $workflow->id);
-                        } catch (\Exception $e) {
-                            Log::error('Failed to send notification to IT user ' . $itUser->email . ' for workflow ID ' . $workflow->id . ': ' . $e->getMessage());
-                        }
-                    }
-                }
-
-                $workflow->work_flow_status = 'Pending IT Approval';
-            } else {
-                // IT approval (final step)
-                $workflow->work_flow_status = 'ID Form Confirmed';
-                $workflow->work_flow_completed = 1;
-            }
-
+            // HR approval is the final step — mark workflow as completed
+            $workflow->work_flow_status = 'ID Form Confirmed';
+            $workflow->work_flow_completed = 1;
             $workflow->save();
         });
 
         return response()->json([
-            'message' => "ID Form approval processed successfully for {$roles} role",
+            'message' => 'ID Form approved successfully',
             'workflow' => $workflow,
             'current_status' => $workflow->work_flow_status
         ]);
@@ -1237,30 +1353,41 @@ class SignatureController extends Controller
 
     public function rejectIdForm(Request $request)
     {
-        // dd($request);
         $workflow = Workflow::where('id_form', $request->access_id)->first();
-        // dd($workflow);
-        if ($workflow) {
-            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
-                ->where('status', 0)
-                ->first();
-
-            if ($workflowHistory) {
-                // Update the status to rejected and save the reason
-                $workflowHistory->status = -1;
-                $workflowHistory->attended_by = Auth::user()->id;
-                $workflowHistory->rejection_reason = $request->reason;
-                $workflowHistory->save();
-                // dd($workflowHistory);
-
-            } else {
-                // Handle case where no WorkflowHistory is found
-                dd("WorkflowHistory not found for Workflow ID {$workflow->id} and status 0");
-            }
-        } else {
-            // Handle case where no Workflow is found
-            dd("Workflow not found for access ID {$request->access_id}");
+        if (!$workflow) {
+            return response()->json(['error' => "Workflow not found for access ID {$request->access_id}"], 404);
         }
+
+        $user = Auth::user();
+
+        // Check if user has HR role
+        if (!$user->hasRole('hr')) {
+            return response()->json(['error' => 'Unauthorized: User does not have HR role'], 403);
+        }
+
+        $hrUserIds = User::role('hr')->pluck('id')->toArray();
+
+        DB::transaction(function () use ($workflow, $user, $hrUserIds, $request) {
+            WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->whereIn('attended_by', $hrUserIds)
+                ->update([
+                    'status' => -1,
+                    'who_approve' => $user->id,
+                    'rejection_reason' => $request->reason ?? 'Rejected by HR',
+                    'decision_date' => now()->format('Y-m-d'),
+                ]);
+
+            $workflow->work_flow_status = 'Rejected by HR';
+            $workflow->work_flow_completed = 0;
+            $workflow->save();
+        });
+
+        return response()->json([
+            'message' => 'ID Form rejected successfully by HR',
+            'workflow' => $workflow,
+            'current_status' => $workflow->work_flow_status
+        ]);
     }
 
     //change request
@@ -1269,23 +1396,25 @@ class SignatureController extends Controller
         $user = Auth::user();
 
         // Check if user has permission to view change requests
-        // Allow: users with 'view change management' permission, price_committee role, or HEC members (cms, cfo, coo)
-        if (
-            !$user->hasPermissionTo('view change management')
-            && !$user->hasRole('price_committee')
-            && !$user->hasAnyRole(['cms', 'cfo', 'coo', 'it', 'super-admin'])
-        ) {
-            abort(403, 'Access denied. You do not have permission to view this change request.');
-        }
-
+        // Allow: the requester themselves, users with 'view change management' permission, price_committee role, or HEC members
         $changeRequest = ChangeRequest::with([
             'user' => function ($query) {
-                $query->with(['jobTitle', 'department']);  // Load the job title and department names
+                $query->with(['jobTitle', 'department']);
             },
             'workflow.histories.forwardedBy',
             'workflow.histories.attendedBy',
             'workflow.histories.approver'
         ])->findOrFail($id);
+
+        $isOwner = $changeRequest->user_id == $user->id;
+        if (
+            !$isOwner
+            && !$user->hasPermissionTo('view change management')
+            && !$user->hasRole('price_committee')
+            && !$user->hasAnyRole(['cms', 'cfo', 'coo', 'it', 'super-admin'])
+        ) {
+            abort(403, 'Access denied. You do not have permission to view this change request.');
+        }
 
         $hecMembers = User::role(['coo', 'cfo', 'cms'])->get();
 
@@ -1374,7 +1503,7 @@ class SignatureController extends Controller
                                 $hec = Hec::find($department->hec_id);
                                 if ($hec) {
                                     $hecLevelName = strtoupper(trim($hec->hec_level_name));
-                                    $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CRHDO' => 'crhdo'];
+                                    $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
                                     $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
 
                                     $hecMember = User::role($roleSlug)->first();
@@ -1412,7 +1541,7 @@ class SignatureController extends Controller
                             $hec = Hec::find($department->hec_id);
                             if ($hec) {
                                 $hecLevelName = strtoupper(trim($hec->hec_level_name));
-                                $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CRHDO' => 'crhdo'];
+                                $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
                                 $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
 
                                 $hecMember = User::role($roleSlug)->first();

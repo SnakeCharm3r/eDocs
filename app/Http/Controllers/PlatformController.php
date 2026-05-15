@@ -16,10 +16,10 @@ class PlatformController extends Controller
     {
         // Load just what the Platforms index needs
         $platforms = Platform::query()
-            ->withCount('units') // for the Units badge
-            ->with('manager:id,fname,mname,lname,username,email') // if you show manager
+            ->withCount('units')
+            ->with('manager:id,fname,mname,lname,username,email')
             ->orderBy('name')
-            ->get();
+            ->get(['id', 'name', 'description', 'manager_user_id', 'locum_hours']);
 
         // Departments list for the “Assign Manager” modal (department -> users)
         // Keep payload light and build a display_name the Blade can use.
@@ -46,6 +46,7 @@ class PlatformController extends Controller
         $data = $request->validate([
             'name'        => 'required|string|max:100|unique:platforms,name',
             'description' => 'nullable|string|max:255',
+            'locum_hours'  => ['required', 'integer', 'in:8,12'],
         ]);
         Platform::create($data);
         return back()->with('success', 'Platform created.');
@@ -61,6 +62,7 @@ class PlatformController extends Controller
         $data = $request->validate([
             'name'        => 'required|string|max:100|unique:platforms,name,' . $platform->id,
             'description' => 'nullable|string|max:255',
+            'locum_hours'  => ['required', 'integer', 'in:8,12'],
         ]);
         $platform->update($data);
         return back()->with('success', 'Platform updated.');
@@ -183,6 +185,7 @@ class PlatformController extends Controller
         return response()->json([
             'has_manager'     => (bool) $p->manager_user_id,
             'manager_user_id' => $p->manager_user_id ? (int) $p->manager_user_id : null,
+            'locum_hours'      => (int) $p->locum_hours,
         ]);
     }
 

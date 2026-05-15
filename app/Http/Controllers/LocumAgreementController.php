@@ -5,16 +5,17 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Workflow;
 use App\Models\LocumRequest;
-use Illuminate\Http\Request;
 use App\Models\LocumAgreement;
+use App\Models\LocumRate;
 use App\Models\WorkFlowHistory;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Schema;
 use App\Mail\ApprovalRequestNotification;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 
 
 
@@ -25,8 +26,68 @@ class LocumAgreementController extends Controller
     public function index()
     {
         $user = Auth::user();
-        $agreement = LocumAgreement::where('user_id', $user->id)->first();
-        return view('locum_agreement.index', compact('agreement', 'user'));
+        $today = Carbon::today();
+        // Most recent HR-approved agreement (valid or expired) for display
+        $agreement = LocumAgreement::where('user_id', $user->id)
+            ->whereIn('status', [2, 5])
+            ->orderByDesc('updated_at')
+            ->orderByDesc('created_at')
+            ->first();
+        if (!$agreement) {
+            $agreement = LocumAgreement::where('user_id', $user->id)->orderByDesc('updated_at')->first();
+        }
+        $locumRates = LocumRate::activeRatesOrdered();
+
+        // Check if user already has a pending agreement (status 0 or 1, not rejected)
+        $hasPendingAgreement = LocumAgreement::where('user_id', $user->id)
+            ->whereIn('status', [0, 1])
+            ->whereNull('rejection_status')
+            ->exists();
+
+        // Check if user has an active (approved & not expired) agreement
+        $hasActiveNonExpiredAgreement = LocumAgreement::where('user_id', $user->id)
+            ->where('status', 2)
+            ->where(function ($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->exists();
+
+        // Admin "use expired agreement until" grace period
+        $expiredButUseUntil = false;
+        $expiredAgreementUseUntilDate = null;
+        $agreementExpiredOnDate = null;
+        if ($agreement && in_array((int)($agreement->status ?? 0), [2, 5]) && $agreement->end_date) {
+            $agreementEnd = Carbon::parse($agreement->end_date)->endOfDay();
+            if ($today->gt($agreementEnd)) {
+                $useUntilRaw = \App\Http\Controllers\SettingsController::getSetting('locum_expired_agreement_use_until', '');
+                if ($useUntilRaw !== '' && $useUntilRaw !== null) {
+                    try {
+                        $useUntil = Carbon::parse($useUntilRaw)->endOfDay();
+                        if ($today->lte($useUntil)) {
+                            $expiredButUseUntil = true;
+                            $expiredAgreementUseUntilDate = Carbon::parse($useUntilRaw)->format('d M Y');
+                            $agreementExpiredOnDate = Carbon::parse($agreement->end_date)->format('d M Y');
+                        }
+                    } catch (\Exception $e) {
+                    }
+                }
+            }
+        }
+
+        // Compute contract period for new agreements: 29 Jan [year] – 29 Jan [year+1]
+        $calendarYear = (int) $today->format('Y');
+        $jan29ThisYear = Carbon::parse(sprintf('%d-01-29', $calendarYear));
+        $contractStartYear = $today->lt($jan29ThisYear) ? $calendarYear - 1 : $calendarYear;
+        $contractStartDate = sprintf('%d-01-29', $contractStartYear);
+        $contractEndDate = sprintf('%d-01-29', $contractStartYear + 1);
+
+        return view('locum_agreement.index', compact(
+            'agreement', 'user', 'locumRates',
+            'expiredButUseUntil', 'expiredAgreementUseUntilDate', 'agreementExpiredOnDate',
+            'hasPendingAgreement', 'hasActiveNonExpiredAgreement',
+            'contractStartDate', 'contractEndDate'
+        ));
     }
 
     public function store(Request $request)
@@ -41,25 +102,56 @@ class LocumAgreementController extends Controller
             return back()->withErrors(['status' => 'Your account is not active. Please contact HR.'])->withInput();
         }
 
+        // Prevent creating multiple agreements: block if user has a pending (status 0 or 1) agreement
+        $hasPendingAgreement = LocumAgreement::where('user_id', $user->id)
+            ->whereIn('status', [0, 1])
+            ->whereNull('rejection_status')
+            ->exists();
+        if ($hasPendingAgreement) {
+            return back()->with('error', 'You already have a locum agreement pending approval. Please wait for it to be processed before submitting a new one.');
+        }
+
+        // Prevent creating multiple agreements: block if user has an active (approved & not expired) agreement
+        $today = Carbon::today();
+        $hasActiveAgreement = LocumAgreement::where('user_id', $user->id)
+            ->where('status', 2)
+            ->where(function ($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->exists();
+        if ($hasActiveAgreement) {
+            return back()->with('error', 'You already have an active locum agreement. You cannot create a new one until your current agreement expires.');
+        }
+
         // --- Validate ---
         $validated = $request->validate([
-            'education_level' => 'required|string|in:Certificate,Enrolled_Certificate,Diploma,Degree,Masters',
+            'education_level' => 'required|string|max:255',
             'locum_rate'      => 'required|numeric|min:0',
-            'start_date'      => 'required|date',
-            'end_date'        => 'required|date|after:start_date',
+            'start_date'      => 'nullable|date',
+            'end_date'        => 'nullable|date|after:start_date',
         ]);
 
-        // --- Enforce rate ---
-        $expectedRate = match ($validated['education_level']) {
-            'Certificate'          => 50000,
-            'Enrolled_Certificate' => 60000,
-            'Diploma'              => 80000,
-            'Degree'               => 100000,
-            'Masters'              => 120000,
-            default                => 0,
-        };
-        if ((float)$validated['locum_rate'] !== (float)$expectedRate) {
-            return back()->withErrors(['locum_rate' => 'Invalid locum rate for the selected education level.'])->withInput();
+        // Contract period: 29 January [year] to 29 January [next year]
+        // If today is before 29 Jan, the contract belongs to the previous cycle (last year's 29 Jan – this year's 29 Jan)
+        // If today is 29 Jan or later, the contract is for this year's cycle (this year's 29 Jan – next year's 29 Jan)
+        $today = \Carbon\Carbon::today();
+        $calendarYear = (int) $today->format('Y');
+        $jan29ThisYear = \Carbon\Carbon::parse(sprintf('%d-01-29', $calendarYear));
+        $contractStartYear = $today->lt($jan29ThisYear) ? $calendarYear - 1 : $calendarYear;
+        $validated['start_date'] = $validated['start_date'] ?? sprintf('%d-01-29', $contractStartYear);
+        $validated['end_date'] = $validated['end_date'] ?? sprintf('%d-01-29', $contractStartYear + 1);
+
+        // --- Enforce rate must match an active rate from locum rates settings ---
+        $rateConfig = LocumRate::where('education_level', $validated['education_level'])
+            ->where('is_active', true)
+            ->where('rate', (float) $validated['locum_rate'])
+            ->first();
+
+        if (!$rateConfig) {
+            return back()
+                ->withErrors(['locum_rate' => 'Invalid locum rate for the selected education level. Please choose from the active rates in the dropdown.'])
+                ->withInput();
         }
 
         // --- Helpers (NO department filter for HR approver) ---
@@ -317,99 +409,151 @@ class LocumAgreementController extends Controller
     //     return redirect()->route('locum-agreements.view')->with('success', 'Locum Agreement submitted successfully.');
     // }
 
-    public function view()
+    public function view(Request $request)
     {
         $user = Auth::user();
 
-        $agreements = LocumAgreement::where('user_id', $user->id)
-            ->with(['user.department'])
-            ->orderBy('created_at', 'desc')
-            ->get();
+        $query = LocumAgreement::where('user_id', $user->id)
+            ->with(['user.department', 'workflow.histories'])
+            ->orderBy('created_at', 'desc');
 
-        $latestAgreement = $agreements->first(); // pick the most recent
-        return view('locum_agreement.view', compact('agreements', 'latestAgreement'));
+        // Filter by applicable year (from start_date) to differentiate e.g. 2025 vs 2026 agreements
+        $selectedYear = $request->get('year');
+        if ($selectedYear !== null && $selectedYear !== '') {
+            $query->whereRaw('YEAR(COALESCE(start_date, created_at)) = ?', [(int) $selectedYear]);
+        }
+
+        $agreements = $query->get();
+
+        // Available years for filter (from agreements' start_date or created_at)
+        $availableYears = LocumAgreement::where('user_id', $user->id)
+            ->selectRaw('YEAR(COALESCE(start_date, created_at)) as year')
+            ->distinct()
+            ->orderByRaw('YEAR(COALESCE(start_date, created_at)) DESC')
+            ->pluck('year');
+
+        // "Valid to use until" date (same as locum-rates / locum-requests): from setting or max agreement end_date
+        $today = Carbon::today();
+        $validUntilRaw = trim((string) (\App\Http\Controllers\SettingsController::getSetting('locum_expired_agreement_use_until', '') ?? ''));
+        $validUntilDate = null;
+        $validUntilDateFormatted = null;
+        if ($validUntilRaw !== '') {
+            try {
+                $d = Carbon::parse($validUntilRaw)->endOfDay();
+                if ($today->lte($d)) {
+                    $validUntilDate = $d;
+                    $validUntilDateFormatted = $d->format('d M Y');
+                }
+            } catch (\Exception $e) {
+            }
+        }
+        if ($validUntilDateFormatted === null) {
+            $maxEnd = LocumAgreement::where('user_id', $user->id)->where('has_contract', true)->whereNotNull('end_date')->where('end_date', '>=', $today)->max('end_date');
+            if ($maxEnd) {
+                try {
+                    $validUntilDate = Carbon::parse($maxEnd)->endOfDay();
+                    $validUntilDateFormatted = $validUntilDate->format('d M Y');
+                } catch (\Exception $e) {
+                }
+            }
+        }
+
+        // Enhance agreements with status information
+        $agreements = $agreements->map(function ($agreement) use ($today, $validUntilDate) {
+            $isApproved = in_array((int) $agreement->status, [2, 5]);
+            $isExpired = (int) $agreement->status === 5;
+            $isActive = false;
+            $expiredButValidUntil = false;
+
+            if ($agreement->end_date) {
+                $endDate = Carbon::parse($agreement->end_date);
+                if (!$isExpired) {
+                    $isExpired = $endDate->lt($today);
+                }
+                if ($isApproved && $isExpired && $validUntilDate && $today->lte($validUntilDate)) {
+                    $expiredButValidUntil = true;
+                    $isActive = true; // treat as "usable" for claiming until validUntilDate
+                } else {
+                    $isActive = $isApproved && !$isExpired;
+                }
+            } elseif ($isApproved && !$isExpired) {
+                $isActive = true;
+            }
+
+            $agreement->is_expired = $isExpired;
+            $agreement->is_active = $isActive;
+            $agreement->expired_but_valid_until = $expiredButValidUntil;
+
+            return $agreement;
+        });
+
+        $latestAgreement = $agreements->first();
+        return view('locum_agreement.view', compact('agreements', 'latestAgreement', 'availableYears', 'selectedYear', 'validUntilDateFormatted', 'validUntilDate'));
     }
 
 
 
     public function show($id)
     {
-        $agreement = LocumAgreement::with('workflow.histories')->findOrFail($id);
+        $agreement = LocumAgreement::with(['user.department', 'workflow' => fn ($q) => $q->with(['histories' => fn ($q) => $q->orderBy('id', 'asc')])])->findOrFail($id);
 
         $linemanager = null;
         $Hr = null;
 
         // Find line manager from workflow history
+        // When LM approves, their row is updated to locum_agreement_status = 1, so we must find by role (and status when approved)
         if ($agreement->workflow && $agreement->workflow->histories) {
-            // First, try to find history record with locum_agreement_status = 0 (LM stage)
-            // This could be pending (status = 0) or approved (status = 1, but locum_agreement_status might be updated to 1)
             $linemanagerHistory = $agreement->workflow->histories
                 ->where('locum_agreement_status', 0)
                 ->first();
-
-            // If not found, look for any history where attended_by is a line manager
             if (!$linemanagerHistory) {
                 foreach ($agreement->workflow->histories as $history) {
-                    $user = User::find($history->attended_by);
-                    if ($user && $user->hasRole('line-manager') && !$user->hasRole('hr')) {
+                    $u = User::find($history->attended_by);
+                    if ($u && $u->hasRole('line-manager') && !$u->hasRole('hr')) {
                         $linemanagerHistory = $history;
                         break;
                     }
                 }
             }
-
             if ($linemanagerHistory) {
                 $linemanager = User::find($linemanagerHistory->attended_by);
             }
 
-            // Get HR approver - look for history with locum_agreement_status = 1 (HR stage)
-            // IMPORTANT: When LM approves, a NEW workflow history is created for HR
-            // We need to find the HR history that was CREATED for HR, not the LM history that was UPDATED
+            // Get HR approver: locum_agreement_status 1 (pending HR) OR 2 (HR approved)
             $HrHistory = null;
-
-            // Find the LM history IDs first to know which ones to exclude
             $lmHistoryIds = [];
             foreach ($agreement->workflow->histories as $history) {
-                $user = User::find($history->attended_by);
-                if ($user && $user->hasRole('line-manager') && !$user->hasRole('hr')) {
+                $u = User::find($history->attended_by);
+                if ($u && $u->hasRole('line-manager') && !$u->hasRole('hr')) {
                     $lmHistoryIds[] = $history->id;
                 }
             }
-
-            // First, look for histories with locum_agreement_status = 1 where:
-            // 1. The user is HR (preferably not also a line manager)
-            // 2. This history is NOT one of the LM histories (to avoid the updated LM history)
             foreach ($agreement->workflow->histories as $history) {
-                if ($history->locum_agreement_status == 1 && !in_array($history->id, $lmHistoryIds)) {
-                    $user = User::find($history->attended_by);
-                    if ($user && $user->hasRole('hr')) {
-                        // Prefer users who are HR but NOT line managers
-                        if (!$user->hasRole('line-manager')) {
+                $las = $history->locum_agreement_status;
+                if (($las == 1 || $las == 2) && !in_array($history->id, $lmHistoryIds)) {
+                    $u = User::find($history->attended_by);
+                    if ($u && $u->hasRole('hr')) {
+                        if (!$u->hasRole('line-manager')) {
                             $HrHistory = $history;
                             break;
-                        } else {
-                            // If user has both roles, still use it but only if we haven't found a better one
-                            if (!$HrHistory) {
-                                $HrHistory = $history;
-                            }
+                        }
+                        if (!$HrHistory) {
+                            $HrHistory = $history;
                         }
                     }
                 }
             }
-
-            // If still not found, look for any HR user from workflow history (excluding LM histories)
             if (!$HrHistory) {
                 foreach ($agreement->workflow->histories as $history) {
                     if (!in_array($history->id, $lmHistoryIds)) {
-                        $user = User::find($history->attended_by);
-                        if ($user && $user->hasRole('hr') && !$user->hasRole('line-manager')) {
+                        $u = User::find($history->attended_by);
+                        if ($u && $u->hasRole('hr') && !$u->hasRole('line-manager')) {
                             $HrHistory = $history;
                             break;
                         }
                     }
                 }
             }
-
             if ($HrHistory) {
                 $Hr = User::find($HrHistory->attended_by);
             }
@@ -422,75 +566,99 @@ class LocumAgreementController extends Controller
                 ->first();
         }
 
-        // Check if Line Manager has approved
-        // When LM approves, the workflow history status becomes 1, but locum_agreement_status is updated to 1
-        // So we need to find the LM history by checking if the user is a line manager AND status = 1
+        // Agreement status 2 = fully approved, 5 = expired (was approved). Use as source of truth so we always show approvers.
+        $agreementApproved = in_array((int) $agreement->status, [2, 5]);
+
+        // Line Manager: find approval record (status=1) by role; when LM approves their row gets locum_agreement_status=1
         $lmApproved = false;
         $lmActionAt = null;
         if ($agreement->workflow && $agreement->workflow->histories) {
-            // First try to find approved LM history (status = 1) where user is a line manager
+            $lmHistory = null;
             foreach ($agreement->workflow->histories as $history) {
-                $user = User::find($history->attended_by);
-                if ($user && $user->hasRole('line-manager') && !$user->hasRole('hr') && $history->status == 1) {
+                $u = User::find($history->attended_by);
+                if (!$u || !$u->hasRole('line-manager') || $u->hasRole('hr')) {
+                    continue;
+                }
+                if ((int) $history->status === 1) {
                     $lmHistory = $history;
-                    $lmApproved = true;
-                    $dt = $lmHistory->attend_date ?? $lmHistory->decision_date ?? $lmHistory->updated_at ?? $lmHistory->created_at;
-                    $lmActionAt = $dt ? \Carbon\Carbon::parse($dt)->format('d M Y H:i') : null;
                     break;
                 }
             }
-
-            // Fallback: check for history with locum_agreement_status = 0 AND status = 1 (before it was updated)
-            if (!$lmApproved) {
-                $lmHistory = $agreement->workflow->histories
-                    ->where('locum_agreement_status', 0)
-                    ->where('status', 1)
-                    ->first();
-                if ($lmHistory) {
-                    $lmApproved = true;
-                    $dt = $lmHistory->attend_date ?? $lmHistory->decision_date ?? $lmHistory->updated_at ?? $lmHistory->created_at;
-                    $lmActionAt = $dt ? \Carbon\Carbon::parse($dt)->format('d M Y H:i') : null;
+            if (!$lmHistory && $agreementApproved) {
+                $lmHistory = $agreement->workflow->histories->first(function ($h) {
+                    $u = User::find($h->attended_by);
+                    return $u && $u->hasRole('line-manager') && !$u->hasRole('hr');
+                });
+            }
+            if ($lmHistory) {
+                $lmApproved = true;
+                $dt = $lmHistory->attend_date ?? $lmHistory->decision_date ?? $lmHistory->updated_at ?? $lmHistory->created_at;
+                $lmActionAt = $dt ? \Carbon\Carbon::parse($dt)->format('d M Y H:i') : null;
+                if (!$linemanager) {
+                    $linemanager = User::find($lmHistory->attended_by);
                 }
+            } elseif ($agreementApproved) {
+                $lmApproved = true;
             }
         }
 
-        // Check if HR has approved
-        // HR approval is indicated by: locum_agreement_status = 2 (final stage) AND status = 1 (approved)
-        // OR agreement status = 2 (approved)
+        // HR: find approval record (status=1) by role; when HR approves their row gets locum_agreement_status=2
         $hrApproved = false;
         $hrActionAt = null;
-        if ($agreement->status == 2) {
-            // Agreement is approved, so HR must have approved
-            $hrApproved = true;
-            $lastHrHistory = $agreement->workflow && $agreement->workflow->histories
-                ? $agreement->workflow->histories
-                ->where('locum_agreement_status', 2)
-                ->where('status', 1)
-                ->first()
-                : null;
-            if ($lastHrHistory) {
-                $dt = $lastHrHistory->attend_date ?? $lastHrHistory->decision_date ?? $lastHrHistory->updated_at ?? $lastHrHistory->created_at;
-                $hrActionAt = $dt ? \Carbon\Carbon::parse($dt)->format('d M Y H:i') : null;
+        if ($agreement->workflow && $agreement->workflow->histories) {
+            $hrHistory = null;
+            foreach ($agreement->workflow->histories as $history) {
+                $u = User::find($history->attended_by);
+                if (!$u || !$u->hasRole('hr')) {
+                    continue;
+                }
+                if ((int) $history->status === 1) {
+                    $hrHistory = $history;
+                    break;
+                }
             }
-        } elseif ($agreement->workflow && $agreement->workflow->histories) {
-            $hrHistory = $agreement->workflow->histories
-                ->where('locum_agreement_status', 2)
-                ->where('status', 1)
-                ->first();
-            $hrApproved = $hrHistory ? true : false;
+            if (!$hrHistory && $agreementApproved) {
+                $hrHistory = $agreement->workflow->histories->first(function ($h) {
+                    $u = User::find($h->attended_by);
+                    return $u && $u->hasRole('hr');
+                });
+            }
             if ($hrHistory) {
+                $hrApproved = true;
                 $dt = $hrHistory->attend_date ?? $hrHistory->decision_date ?? $hrHistory->updated_at ?? $hrHistory->created_at;
                 $hrActionAt = $dt ? \Carbon\Carbon::parse($dt)->format('d M Y H:i') : null;
+                if (!$Hr) {
+                    $Hr = User::find($hrHistory->attended_by);
+                }
+            } elseif ($agreementApproved) {
+                $hrApproved = true;
             }
         }
+
+        // Employee submission time (when agreement was submitted – real time, not today)
+        $employeeActionAt = $agreement->created_at
+            ? \Carbon\Carbon::parse($agreement->created_at)->format('d M Y H:i')
+            : null;
+
+        // Differentiate view: applicable year from start_date or created_at
+        $applicableYear = $agreement->start_date
+            ? (int) \Carbon\Carbon::parse($agreement->start_date)->format('Y')
+            : (int) \Carbon\Carbon::parse($agreement->created_at)->format('Y');
+        $currentYear = (int) now()->format('Y');
+        $isCurrentYearAgreement = $applicableYear === $currentYear;
+        $agreementYearLabel = $isCurrentYearAgreement ? 'Current year' : 'Previous year';
+
+        // Agreements from 2026 onwards use "new year" format with year-specific explanations
+        $newYearCutoff = 2026;
+        $isNewYearFormat = $applicableYear >= $newYearCutoff;
 
         if (!$agreement) {
             return redirect()->back()->withErrors(['agreement' => 'Locum Agreement not found.']);
         }
         if ($agreement->user_id == auth()->id()) {
-            return view('locum_agreement.show', compact('agreement', 'linemanager', 'Hr', 'lmApproved', 'hrApproved', 'lmActionAt', 'hrActionAt'));
+            return view('locum_agreement.show', compact('agreement', 'linemanager', 'Hr', 'lmApproved', 'hrApproved', 'lmActionAt', 'hrActionAt', 'employeeActionAt', 'applicableYear', 'isCurrentYearAgreement', 'agreementYearLabel', 'newYearCutoff', 'isNewYearFormat'));
         } else {
-            return view('locum_agreement.approve_locum_agreement', compact('agreement', 'linemanager', 'Hr', 'lmApproved', 'hrApproved', 'lmActionAt', 'hrActionAt'));
+            return view('locum_agreement.approve_locum_agreement', compact('agreement', 'linemanager', 'Hr', 'lmApproved', 'hrApproved', 'lmActionAt', 'hrActionAt', 'employeeActionAt', 'applicableYear', 'isCurrentYearAgreement', 'agreementYearLabel', 'newYearCutoff', 'isNewYearFormat'));
         }
     }
 
@@ -535,65 +703,139 @@ class LocumAgreementController extends Controller
             $userDeptFk = 'deptId';
         }
 
-        // === Agreements list (assigned to me, not completed) ===
-        // Get unique agreements by using a subquery to find the latest pending history for each workflow
-        $latestPendingHistoryIds = \DB::table('work_flow_histories')
-            ->select(\DB::raw('MAX(id) as id'))
-            ->where('attended_by', $user->id)
-            ->where('status', 0)
-            ->whereNotNull('locum_agreement_status')
-            ->groupBy('work_flow_id')
-            ->pluck('id');
+        // === Agreements list ===
+        // If user is HR or super-admin, show ALL agreements (even if approved by other HR)
+        // Otherwise, show only agreements assigned to them
+        $isHrOrSuperAdmin = $user->hasRole('hr') || $user->hasRole('super-admin');
 
-        // Log for debugging on live server
-        Log::info('Locum Agreement Approver Queue', [
-            'user_id' => $user->id,
-            'user_roles' => $user->getRoleNames()->toArray(),
-            'pending_history_ids_count' => $latestPendingHistoryIds->count(),
-            'pending_history_ids' => $latestPendingHistoryIds->toArray(),
-        ]);
-
-        // If no pending histories found, return empty collection
-        if ($latestPendingHistoryIds->isEmpty()) {
-            Log::info('No pending locum agreement histories found for user', ['user_id' => $user->id]);
-            $agreements = collect();
-        } else {
+        if ($isHrOrSuperAdmin) {
+            // Show ALL agreements for HR/super-admin (all statuses, all users)
             $agreementsQuery = \DB::table('locum_agreements')
-                ->join('workflows', 'locum_agreements.id', '=', 'workflows.locum_agreement_id')
-                ->join('work_flow_histories', function ($join) use ($latestPendingHistoryIds) {
-                    $join->on('workflows.id', '=', 'work_flow_histories.work_flow_id')
-                        ->whereIn('work_flow_histories.id', $latestPendingHistoryIds->toArray());
-                })
                 ->join('users', 'locum_agreements.user_id', '=', 'users.id');
 
-            // Base selects
-            $selects = [
+            // Build select columns
+            $selectColumns = [
                 'locum_agreements.*',
-                'work_flow_histories.attended_by',
-                'work_flow_histories.remark',
+                \DB::raw('NULL as attended_by'),
+                \DB::raw('NULL as remark'),
                 'users.fname',
                 'users.lname',
-                'users.ccbrt_code',
+                'users.ccbrt_code'
             ];
 
             // Join departments if we can; otherwise emit a fallback alias
             if ($hasDepartmentsTable && $deptNameColumn && $userDeptFk) {
                 $agreementsQuery->leftJoin('departments', "users.$userDeptFk", '=', 'departments.id');
-                $selects[] = \DB::raw("COALESCE(departments.$deptNameColumn, '—') AS department_name");
+                $deptCol = $deptNameColumn;
+                $selectColumns[] = \DB::raw("COALESCE(departments.`{$deptCol}`, '-') AS department_name");
             } else {
-                $selects[] = \DB::raw("'—' AS department_name");
+                $selectColumns[] = \DB::raw("'-' AS department_name");
             }
 
             $agreements = $agreementsQuery
-                ->select($selects)
+                ->select($selectColumns)
                 ->orderByDesc('locum_agreements.created_at')
                 ->get();
 
-            Log::info('Locum Agreement Approver Queue Results', [
+            Log::info('Locum Agreement Approver Queue Results (HR/Super-Admin - All Agreements)', [
                 'user_id' => $user->id,
                 'agreements_count' => $agreements->count(),
                 'agreement_ids' => $agreements->pluck('id')->toArray(),
             ]);
+        } else {
+            // For non-HR users (line managers, HEC members), show:
+            // 1. Pending agreements assigned to them (status = 0) - CURRENT pending step
+            // 2. Approved agreements they approved (status = 1) - if no pending exists
+
+            // First, get workflows with CURRENT pending steps (status = 0) for this user
+            // A step is "current" if it's the latest pending step for that workflow
+            $pendingHistoryIds = \DB::table('work_flow_histories as wfh1')
+                ->select('wfh1.id')
+                ->where('wfh1.attended_by', $user->id)
+                ->where('wfh1.status', 0)
+                ->whereNotNull('wfh1.locum_agreement_status')
+                ->whereRaw('wfh1.id = (
+                    SELECT MAX(wfh2.id)
+                    FROM work_flow_histories as wfh2
+                    WHERE wfh2.work_flow_id = wfh1.work_flow_id
+                    AND wfh2.attended_by = ?
+                    AND wfh2.status = 0
+                    AND wfh2.locum_agreement_status IS NOT NULL
+                )', [$user->id])
+                ->pluck('id');
+
+            // Get workflow IDs that have pending steps
+            $pendingWorkflowIds = \DB::table('work_flow_histories')
+                ->whereIn('id', $pendingHistoryIds->toArray())
+                ->pluck('work_flow_id');
+
+            // Get approved history IDs (where user approved, but no pending exists for that workflow)
+            $approvedHistoryIds = \DB::table('work_flow_histories')
+                ->select(\DB::raw('MAX(id) as id'))
+                ->where('attended_by', $user->id)
+                ->where('status', 1)
+                ->whereNotNull('locum_agreement_status')
+                ->whereNotIn('work_flow_id', $pendingWorkflowIds->toArray())
+                ->groupBy('work_flow_id')
+                ->pluck('id');
+
+            // Combine both pending and approved history IDs
+            $latestPendingHistoryIds = $pendingHistoryIds->merge($approvedHistoryIds);
+
+            // Log for debugging on live server
+            Log::info('Locum Agreement Approver Queue', [
+                'user_id' => $user->id,
+                'user_roles' => $user->getRoleNames()->toArray(),
+                'pending_history_ids_count' => $pendingHistoryIds->count(),
+                'approved_history_ids_count' => $approvedHistoryIds->count(),
+                'total_history_ids_count' => $latestPendingHistoryIds->count(),
+                'history_ids' => $latestPendingHistoryIds->toArray(),
+            ]);
+
+            // If no histories found, return empty collection
+            if ($latestPendingHistoryIds->isEmpty()) {
+                Log::info('No locum agreement histories found for user', ['user_id' => $user->id]);
+                $agreements = collect();
+            } else {
+                $agreementsQuery = \DB::table('locum_agreements')
+                    ->join('workflows', 'locum_agreements.id', '=', 'workflows.locum_agreement_id')
+                    ->join('work_flow_histories', function ($join) use ($latestPendingHistoryIds) {
+                        $join->on('workflows.id', '=', 'work_flow_histories.work_flow_id')
+                            ->whereIn('work_flow_histories.id', $latestPendingHistoryIds->toArray());
+                    })
+                    ->join('users', 'locum_agreements.user_id', '=', 'users.id');
+
+                // Base selects
+                $selects = [
+                    'locum_agreements.*',
+                    'work_flow_histories.attended_by',
+                    'work_flow_histories.remark',
+                    'work_flow_histories.status as history_status',
+                    'users.fname',
+                    'users.lname',
+                    'users.ccbrt_code',
+                ];
+
+                // Join departments if we can; otherwise emit a fallback alias
+                if ($hasDepartmentsTable && $deptNameColumn && $userDeptFk) {
+                    $agreementsQuery->leftJoin('departments', "users.$userDeptFk", '=', 'departments.id');
+                    $deptCol = $deptNameColumn;
+                    $selects[] = \DB::raw("COALESCE(departments.`{$deptCol}`, '-') AS department_name");
+                } else {
+                    $selects[] = \DB::raw("'-' AS department_name");
+                }
+
+                $agreements = $agreementsQuery
+                    ->select($selects)
+                    ->orderByDesc('locum_agreements.created_at')
+                    ->get();
+
+                Log::info('Locum Agreement Approver Queue Results', [
+                    'user_id' => $user->id,
+                    'agreements_count' => $agreements->count(),
+                    'agreement_ids' => $agreements->pluck('id')->toArray(),
+                ]);
+            }
         }
 
         // ---- SPLIT FOR TABS/COUNTS (this fixes Undefined variable $pending) ----
@@ -602,7 +844,7 @@ class LocumAgreementController extends Controller
         })->values();
 
         $approved = $agreements->filter(function ($a) {
-            return (int)($a->status ?? 0) === 2;
+            return in_array((int)($a->status ?? 0), [2, 5]);
         })->values();
 
         $rejected = $agreements->filter(function ($a) {
@@ -614,7 +856,7 @@ class LocumAgreementController extends Controller
             ->selectRaw("
             SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END) AS pending_line_manager,
             SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS pending_hr,
-            SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) AS approved,
+            SUM(CASE WHEN status IN (2,5) THEN 1 ELSE 0 END) AS approved,
             SUM(CASE WHEN status IN (3,4) THEN 1 ELSE 0 END) AS rejected,
             COUNT(*) AS total
         ")
@@ -629,7 +871,7 @@ class LocumAgreementController extends Controller
                 COALESCE(d.$deptNameColumn, 'Unassigned') AS department,
                 COUNT(*) AS total,
                 SUM(CASE WHEN la.status = 1 THEN 1 ELSE 0 END) AS pending_hr,
-                SUM(CASE WHEN la.status = 2 THEN 1 ELSE 0 END) AS approved,
+                SUM(CASE WHEN la.status IN (2,5) THEN 1 ELSE 0 END) AS approved,
                 SUM(CASE WHEN la.status IN (3,4) THEN 1 ELSE 0 END) AS rejected
             ")
                 ->groupBy('department')
@@ -652,17 +894,37 @@ class LocumAgreementController extends Controller
             2 => ['label' => 'Approved',                'class' => 'bg-success'],
             3 => ['label' => 'Rejected by Line Manager', 'class' => 'bg-danger'],
             4 => ['label' => 'Rejected by HR',          'class' => 'bg-danger'],
+            5 => ['label' => 'Expired',                 'class' => 'bg-secondary'],
         ];
+
+        // Mark the most recent active contract per user
+        $activeAgreementIds = collect();
+        $grouped = $agreements->groupBy('user_id');
+        foreach ($grouped as $userId => $userAgreements) {
+            // Priority: approved (2) with end_date >= today, then most recent by status
+            $active = $userAgreements->filter(fn($a) => (int)$a->status === 2 && $a->end_date && \Carbon\Carbon::parse($a->end_date)->gte(now()->startOfDay()))->sortByDesc('created_at')->first();
+            if (!$active) {
+                // Fallback: most recent pending (0 or 1)
+                $active = $userAgreements->filter(fn($a) => in_array((int)$a->status, [0, 1]))->sortByDesc('created_at')->first();
+            }
+            if ($active) {
+                $activeAgreementIds->push($active->id);
+            }
+        }
+
+        $locumRates = LocumRate::activeRatesOrdered();
 
         return view('locum_agreement.all_locum_agreement', compact(
             'agreements',
             'pending',
             'approved',
-            'rejected',   // <-- add these
+            'rejected',
             'requests',
+            'locumRates',
             'hrStatusCounts',
             'departmentSummary',
-            'statusMap'
+            'statusMap',
+            'activeAgreementIds'
         ));
     }
 
@@ -819,6 +1081,10 @@ class LocumAgreementController extends Controller
             ->whereNotNull('locum_agreement_status')
             ->first();
 
+        if (!$workflowHistory && Auth::user()->hasRole('hr')) {
+            $workflowHistory = $this->pendingHrAgreementHistoryAssignedToRequester($workflow, $locumAgreement, Auth::user());
+        }
+
         if (!$workflowHistory) {
             Log::error('No pending workflow history for user ' . Auth::id() . ' and agreement ' . $id);
             return redirect()
@@ -836,16 +1102,21 @@ class LocumAgreementController extends Controller
                 $locumAgreement->status = 1; // your map: 1 => Pending to HR
                 $workflowHistory->locum_agreement_status = 1; // stage marker
                 $workflowHistory->status = 1;                  // close my step
+                $workflowHistory->attend_date = now();        // real time when LM approved
 
-                // Resolve the HR approver ONCE per request
-                static $hrApproverCache = null;
-                if (!$hrApproverCache) {
-                    $hrApproverCache = User::whereHas('roles', fn($q) => $q->where('name', 'hr'))
-                        ->where('approvelocum', 1)
-                        // If approver is department-specific, uncomment:
-                        // ->when($locumAgreement->department_id ?? null, fn($q, $deptId) => $q->where('department_id', $deptId))
-                        ->first();
-                }
+                $hrApproverQuery = User::whereHas('roles', fn($q) => $q->where('name', 'hr'))
+                    ->where('approvelocum', 1)
+                    ->orderBy('id');
+
+                $requesterIsHr = User::whereKey($locumAgreement->user_id)
+                    ->whereHas('roles', fn($q) => $q->where('name', 'hr'))
+                    ->exists();
+
+                $hrApproverCache = $requesterIsHr
+                    ? (clone $hrApproverQuery)->where('id', '!=', $locumAgreement->user_id)->first()
+                    : null;
+
+                $hrApproverCache = $hrApproverCache ?: $hrApproverQuery->first();
 
                 if (!$hrApproverCache) {
                     DB::rollBack();
@@ -887,8 +1158,10 @@ class LocumAgreementController extends Controller
             // HR -> final approval
             elseif ($user->hasRole('hr')) {
                 $locumAgreement->status = 2; // Approved
+                $workflowHistory->attended_by = $user->id;
                 $workflowHistory->locum_agreement_status = 2; // final stage code
                 $workflowHistory->status = 1;                 // close my HR step
+                $workflowHistory->attend_date = now();        // real time when HR approved
 
                 // Just in case: close any other stray pending HR entries for this workflow
                 WorkFlowHistory::where('work_flow_id', $workflow->id)
@@ -928,6 +1201,27 @@ class LocumAgreementController extends Controller
                 ->route('locum-requests.viewAgreementRequest')
                 ->withErrors(['error' => 'An error occurred during approval. Please try again.']);
         }
+    }
+
+    private function pendingHrAgreementHistoryAssignedToRequester(Workflow $workflow, LocumAgreement $locumAgreement, User $user): ?WorkFlowHistory
+    {
+        if ((int) $locumAgreement->status !== 1 || (int) $locumAgreement->user_id === (int) $user->id) {
+            return null;
+        }
+
+        $requesterIsHr = User::whereKey($locumAgreement->user_id)
+            ->whereHas('roles', fn($q) => $q->where('name', 'hr'))
+            ->exists();
+
+        if (!$requesterIsHr) {
+            return null;
+        }
+
+        return $workflow->histories()
+            ->where('attended_by', $locumAgreement->user_id)
+            ->where('status', 0)
+            ->where('locum_agreement_status', 1)
+            ->first();
     }
 
 
@@ -991,6 +1285,25 @@ class LocumAgreementController extends Controller
         $user = Auth::user();
         $agreement = LocumAgreement::with('workflow.histories')->where('user_id', $user->id)->findOrFail($id);
 
+        // Check if agreement is expired (based on creation date + 1 year or stored end_date)
+        $agreementCreatedDate = Carbon::parse($agreement->created_at);
+        $validEndDate = $agreementCreatedDate->copy()->addYear();
+        $today = Carbon::today();
+        $isExpired = false;
+
+        if ($agreement->end_date) {
+            $endDate = Carbon::parse($agreement->end_date);
+            $isExpired = $endDate->lt($today);
+        } else {
+            $isExpired = $validEndDate->lt($today);
+        }
+
+        // Prevent editing of expired agreements
+        if ($isExpired) {
+            return redirect()->route('locum-agreements.view')
+                ->with('error', 'This agreement has expired and cannot be edited. Please create a new agreement.');
+        }
+
         // Only allow editing of rejected agreements
         $isRejected = in_array((int)($agreement->status ?? 0), [3, 4]);
 
@@ -1022,7 +1335,8 @@ class LocumAgreementController extends Controller
             }
         }
 
-        return view('locum_agreement.edit', compact('agreement'));
+        $locumRates = LocumRate::activeRatesOrdered();
+        return view('locum_agreement.edit', compact('agreement', 'locumRates'));
     }
 
     public function update(Request $request, $id)
@@ -1063,23 +1377,30 @@ class LocumAgreementController extends Controller
 
         // Validate input
         $validated = $request->validate([
-            'education_level' => 'required|string|in:Certificate,Enrolled_Certificate,Diploma,Degree,Masters',
+            'education_level' => 'required|string|max:255',
             'locum_rate'      => 'required|numeric|min:0',
-            'start_date'      => 'required|date',
-            'end_date'        => 'required|date|after:start_date',
+            'start_date'      => 'nullable|date',
+            'end_date'        => 'nullable|date|after:start_date',
         ]);
 
-        // Enforce rate
-        $expectedRate = match ($validated['education_level']) {
-            'Certificate'          => 50000,
-            'Enrolled_Certificate' => 60000,
-            'Diploma'              => 80000,
-            'Degree'               => 100000,
-            'Masters'              => 120000,
-            default                => 0,
-        };
-        if ((float)$validated['locum_rate'] !== (float)$expectedRate) {
-            return back()->withErrors(['locum_rate' => 'Invalid locum rate for the selected education level.'])->withInput();
+        // Contract period: 29 January [year] to 29 January [next year]
+        // From 1 Jan 2026 onward, use 2026 as agreement year (29 Jan 2026 – 29 Jan 2027)
+        $today = \Carbon\Carbon::today();
+        $calendarYear = (int) $today->format('Y');
+        $year = $today->gte(\Carbon\Carbon::parse('2026-01-01')) ? 2026 : $calendarYear;
+        $validated['start_date'] = $validated['start_date'] ?? sprintf('%d-01-29', $year);
+        $validated['end_date'] = $validated['end_date'] ?? sprintf('%d-01-29', $year + 1);
+
+        // Enforce rate must match an active rate from locum rates settings
+        $rateConfig = LocumRate::where('education_level', $validated['education_level'])
+            ->where('is_active', true)
+            ->where('rate', (float) $validated['locum_rate'])
+            ->first();
+
+        if (!$rateConfig) {
+            return back()
+                ->withErrors(['locum_rate' => 'Invalid locum rate for the selected education level. Please choose from the active rates in the dropdown.'])
+                ->withInput();
         }
 
         // Helpers
@@ -1194,6 +1515,138 @@ class LocumAgreementController extends Controller
             DB::rollBack();
             Log::error('Failed to update Locum Agreement: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return back()->withErrors(['error' => 'An error occurred while resubmitting your request. Please try again.'])->withInput();
+        }
+    }
+
+    /**
+     * Update locum rate for an agreement (HR/Super-Admin only)
+     */
+    public function updateRate(Request $request, $id)
+    {
+        $user = Auth::user();
+
+        // Only HR and super-admin can update rates
+        if (!$user->hasRole('hr') && !$user->hasRole('super-admin')) {
+            return back()->withErrors(['error' => 'You do not have permission to update locum rates.'])->withInput();
+        }
+
+        $agreement = LocumAgreement::with('user')->findOrFail($id);
+
+        $validated = $request->validate([
+            'education_level' => 'required|string|max:255',
+            'locum_rate' => 'required|numeric|min:0',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            // Store old values before updating
+            $oldEducationLevel = $agreement->education_level;
+            $oldLocumRate = (float) $agreement->locum_rate;
+            $newEducationLevel = $validated['education_level'];
+            $newLocumRate = (float) $validated['locum_rate'];
+
+            // Check if anything actually changed
+            $educationChanged = $oldEducationLevel !== $newEducationLevel;
+            $rateChanged = abs($oldLocumRate - $newLocumRate) > 0.01;
+
+            if (!$educationChanged && !$rateChanged) {
+                DB::rollBack();
+                return back()->with('info', 'No changes were made to the locum rate.');
+            }
+
+            // Update the agreement
+            $agreement->update([
+                'education_level' => $newEducationLevel,
+                'locum_rate' => $newLocumRate,
+            ]);
+
+            // Get the staff member whose rate was changed
+            $staffMember = $agreement->user;
+            if (!$staffMember) {
+                throw new \Exception('Staff member not found for this agreement.');
+            }
+
+            // Find line manager for the staff member's department
+            $lineManager = null;
+            if ($staffMember->deptId) {
+                $lineManager = User::whereHas('roles', function ($query) {
+                    $query->where('name', 'line-manager');
+                })
+                    ->where('deptId', $staffMember->deptId)
+                    ->where('id', '!=', $staffMember->id) // Don't send to the staff member if they are their own line manager
+                    ->first();
+            }
+
+            // Send email to the staff member (queued)
+            if (!empty($staffMember->email)) {
+                try {
+                    Mail::to($staffMember->email)->queue(new \App\Mail\LocumRateChangeNotification(
+                        $agreement,
+                        $staffMember,
+                        $oldEducationLevel,
+                        $newEducationLevel,
+                        $oldLocumRate,
+                        $newLocumRate,
+                        $user,
+                        false // Not line manager
+                    ));
+                    Log::info('Locum Rate Change Email Sent to Staff Member', [
+                        'staff_email' => $staffMember->email,
+                        'agreement_id' => $agreement->id,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Failed to send email to staff member', [
+                        'staff_email' => $staffMember->email,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            // Send email to line manager if found (queued)
+            if ($lineManager && !empty($lineManager->email)) {
+                try {
+                    Mail::to($lineManager->email)->queue(new \App\Mail\LocumRateChangeNotification(
+                        $agreement,
+                        $staffMember,
+                        $oldEducationLevel,
+                        $newEducationLevel,
+                        $oldLocumRate,
+                        $newLocumRate,
+                        $user,
+                        true // Is line manager
+                    ));
+                    Log::info('Locum Rate Change Email Sent to Line Manager', [
+                        'line_manager_email' => $lineManager->email,
+                        'agreement_id' => $agreement->id,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Failed to send email to line manager', [
+                        'line_manager_email' => $lineManager->email,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            // Log the change
+            Log::info('Locum Agreement Rate Updated', [
+                'agreement_id' => $agreement->id,
+                'user_id' => $agreement->user_id,
+                'updated_by' => $user->id,
+                'old_education_level' => $oldEducationLevel,
+                'new_education_level' => $newEducationLevel,
+                'old_locum_rate' => $oldLocumRate,
+                'new_locum_rate' => $newLocumRate,
+                'line_manager_notified' => $lineManager ? true : false,
+            ]);
+
+            DB::commit();
+
+            return back()->with('success', 'Locum rate updated successfully. Email notifications have been sent to the staff member' . ($lineManager ? ' and their line manager' : '') . '.');
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            Log::error('Failed to update Locum Rate: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return back()->withErrors(['error' => 'An error occurred while updating the locum rate. Please try again.'])->withInput();
         }
     }
 }

@@ -2,14 +2,16 @@
 
 @section('breadcrumb')
     @include('sweetalert::alert')
+@endsection
 
+@section('content')
     <div class="page-wrapper">
         <div class="content container-fluid">
             <div class="page-header">
                 <div class="row">
                     <div class="col-sm-12">
                         <div class="page-sub-header">
-                            <h3 class="page-title">Edit Department</h3>
+                            <h3 class="page-title">Edit HEC Level</h3>
                         </div>
                     </div>
                 </div>
@@ -49,7 +51,4 @@
             </form>
         </div>
     </div>
-@endsection
-
-@section('content')
 @endsection

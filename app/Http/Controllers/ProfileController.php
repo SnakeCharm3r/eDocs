@@ -21,7 +21,20 @@ class ProfileController extends Controller
     public function index()
     {
         $user = Auth::user()->load('department', 'jobTitle', 'employmentType');
-        $policies = Policy::all();
+
+        // Get user's department and its divisions
+        $userDepartmentId = $user->deptId;
+        $userDivisionIds = [];
+
+        if ($user->department) {
+            $userDivisionIds = $user->department->divisions()->pluck('divisions.id')->toArray();
+        }
+
+        // Show all HR policies (policies table) - no filtering
+        $policies = Policy::with(['departments', 'division'])
+            ->where('status', 'active')
+            ->orderBy('created_at', 'desc')
+            ->get();
         $nextOfKins = UserAdditionalInfo::where('userId', $user->id)->get();
         $familyData = UserFamilyDetails::where('userId', $user->id)->get();
         $healthDetails = HealthDetails::where('userId', $user->id)->get();
@@ -36,27 +49,42 @@ class ProfileController extends Controller
             }
             return $relation;
         });
-        
+
+        // Date shown under policies: joining date = date user put their signature (starting_date), else user creation date
+        $policyDate = $user->starting_date
+            ? \Carbon\Carbon::parse($user->starting_date)->startOfDay()
+            : $user->created_at;
+        $hrWorkflow = \App\Models\Workflow::where('hr_form', $user->id)
+            ->where('work_flow_completed', 1)
+            ->where('work_flow_status', 'HR Form Approved')
+            ->orderBy('updated_at', 'desc')
+            ->first();
+
+        if ($hrWorkflow && $hrWorkflow->updated_at && !$user->starting_date) {
+            // Fallback: use HR approval date if no joining date set
+            $policyDate = $hrWorkflow->updated_at;
+        }
+
         // Check license status for clinical users
         $licenseInfo = null;
         $isClinicalDepartment = $user->jobTitle && $user->jobTitle->clinical_or_non_clinical === 'Clinical';
-        
+
         if ($isClinicalDepartment) {
             // Get HR workflow for this user
-            $hrWorkflow = \App\Models\Workflow::where('hr_form', $user->id)->orderBy('id', 'desc')->first();
-            
-            if ($hrWorkflow) {
+            $hrWorkflowForLicense = \App\Models\Workflow::where('hr_form', $user->id)->orderBy('id', 'desc')->first();
+
+            if ($hrWorkflowForLicense) {
                 // Get the most recent HR workflow history with license info
-                $hrWorkflowHistory = \App\Models\WorkFlowHistory::where('work_flow_id', $hrWorkflow->id)
+                $hrWorkflowHistory = \App\Models\WorkFlowHistory::where('work_flow_id', $hrWorkflowForLicense->id)
                     ->whereNotNull('license_valid_until')
                     ->orderBy('id', 'desc')
                     ->first();
-                
+
                 if ($hrWorkflowHistory) {
                     $expiryDate = \Carbon\Carbon::parse($hrWorkflowHistory->license_valid_until)->startOfDay();
                     $today = \Carbon\Carbon::now()->startOfDay();
                     $daysUntilExpiry = $expiryDate->diffInDays($today, false);
-                    
+
                     $licenseInfo = [
                         'license_valid_until' => $hrWorkflowHistory->license_valid_until,
                         'license_provider' => $hrWorkflowHistory->license_provider,
@@ -69,8 +97,8 @@ class ProfileController extends Controller
                 }
             }
         }
-        
-        return view('user_info.profile', compact('user', 'policies', 'nextOfKins', 'familyData', 'healthDetails', 'languageData', 'ccbrtRelation', 'licenseInfo', 'isClinicalDepartment'));
+
+        return view('user_info.profile', compact('user', 'policies', 'nextOfKins', 'familyData', 'healthDetails', 'languageData', 'ccbrtRelation', 'licenseInfo', 'isClinicalDepartment', 'policyDate'));
     }
 
     public function updateProfilePicture(Request $request)
@@ -131,6 +159,7 @@ class ProfileController extends Controller
     {
         // Validate form data (without employee_cv)
         $request->validate([
+            'email' => 'required|email|max:255|unique:users,email,' . $id,
             'mobile' => 'nullable|string|max:15',
             'house_no' => 'nullable|string|max:20',
             'religion' => 'nullable|string|max:20',
@@ -146,8 +175,19 @@ class ProfileController extends Controller
         // Find user
         $user = User::findOrFail($id);
 
-        // Update user fields
-        $user->update($request->all());
+        // Update only validated fields
+        $user->update([
+            'email' => $request->email,
+            'mobile' => $request->mobile,
+            'house_no' => $request->house_no,
+            'religion' => $request->religion,
+            'region' => $request->region,
+            'district' => $request->district,
+            'street' => $request->street,
+            'box_no' => $request->box_no,
+            'plot_no' => $request->plot_no,
+            'popular_landmark' => $request->popular_landmark,
+        ]);
 
         // Redirect with success message
         return redirect()->route('profile.index')->with('success', 'User updated successfully.');

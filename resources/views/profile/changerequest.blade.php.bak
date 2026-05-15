@@ -1,0 +1,619 @@
+@extends('layouts.template')
+
+@section('breadcrumb')
+    @include('sweetalert::alert')
+@endsection
+
+@section('content')
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <style>
+        /* ── Override layout wrapper padding ── */
+        .content-wrapper { padding: 0 !important; }
+        .content-wrapper > .content { padding: 0 !important; margin: 0 !important; }
+
+        /* ── Page shell (grey background like HR form) ── */
+        .cr-shell {
+            background: #dde1e7;
+            min-height: calc(100vh - 60px);
+            padding: 1.5rem;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        /* ── A4 document card ── */
+        .cr-a4 {
+            background: #fff;
+            width: 100%;
+            max-width: 860px;
+            flex-shrink: 0;
+            box-shadow: 0 2px 20px rgba(0,0,0,.18);
+            border-radius: 3px;
+            padding: 2.2rem 2.4rem;
+            margin-top: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        /* ── Document header ── */
+        .cr-doc-header {
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 3px solid #007A33; padding-bottom: .85rem; margin-bottom: 1.2rem;
+        }
+        .cr-doc-header .doc-logo { height: 56px; width: auto; }
+        .cr-doc-header .doc-title { text-align: center; flex: 1; padding: 0 1rem; }
+        .cr-doc-header .doc-title .main-title {
+            font-size: 1.25rem; font-weight: 700; color: #007A33;
+            letter-spacing: .04em; text-transform: uppercase;
+        }
+        .cr-doc-header .doc-title .sub-title { font-size: .78rem; color: #6c757d; margin-top: .1rem; }
+        .cr-doc-header .doc-ref { font-size: .75rem; color: #6c757d; text-align: right; white-space: nowrap; }
+        .cr-doc-header .doc-ref strong { color: #495057; }
+
+        /* ── Status banner ── */
+        .cr-status-line {
+            display: flex; align-items: center; gap: .6rem;
+            font-size: .82rem; margin-bottom: 1.2rem; padding: .5rem .75rem; border-radius: 4px;
+        }
+        .cr-status-line.approved { background: #d4edda; color: #155724; border-left: 4px solid #28a745; }
+        .cr-status-line.rejected { background: #f8d7da; color: #721c24; border-left: 4px solid #dc3545; }
+        .cr-status-line.pending  { background: #fff3cd; color: #856404; border-left: 4px solid #ffc107; }
+
+        /* ── Section headings (full-width green bar) ── */
+        .cr-section-heading {
+            display: flex; align-items: center; gap: .5rem;
+            font-size: .82rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: .06em;
+            color: #fff; background: #007A33;
+            padding: .38rem .85rem;
+            margin: 1.4rem -2.4rem .85rem;
+            padding-left: 2.4rem;
+        }
+        .cr-section-heading i { opacity: .85; }
+
+        /* ── Info grid ── */
+        .cr-info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; }
+        .cr-info-cell {
+            padding: .45rem .7rem; border: 1px solid #e9ecef; margin: -1px 0 0 -1px;
+        }
+        .cr-info-cell .ic-label {
+            font-size: .67rem; font-weight: 700; color: #868e96;
+            text-transform: uppercase; letter-spacing: .04em;
+        }
+        .cr-info-cell .ic-value { font-size: .87rem; color: #212529; }
+        .cr-info-cell.span2 { grid-column: span 2; }
+        .cr-info-cell.span3 { grid-column: span 3; }
+
+        /* ── Content box ── */
+        .cr-content-box {
+            background: #fafafa; border-left: 4px solid #007A33;
+            padding: .75rem 1rem; border-radius: 0 3px 3px 0;
+            font-size: .85rem; line-height: 1.7; color: #212529;
+        }
+
+        /* ── Priority pills ── */
+        .cr-priority-row { display: flex; gap: .75rem; }
+        .cr-priority-pill {
+            flex: 1; text-align: center; padding: .55rem .5rem;
+            border-radius: 4px; border: 2px solid #e9ecef; background: #f8f9fa;
+            font-size: .82rem; font-weight: 600; color: #adb5bd;
+        }
+        .cr-priority-pill.active-low { border-color: #28a745; background: #d4edda; color: #155724; }
+        .cr-priority-pill.active-medium { border-color: #ffc107; background: #fff3cd; color: #856404; }
+        .cr-priority-pill.active-high { border-color: #dc3545; background: #f8d7da; color: #721c24; }
+
+        /* ── Tables ── */
+        .cr-tbl { width: 100%; border-collapse: collapse; font-size: .85rem; }
+        .cr-tbl th {
+            background: #f1f3f5; font-size: .75rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: .04em; color: #495057;
+            padding: .5rem .7rem; border: 1px solid #dee2e6;
+        }
+        .cr-tbl td { padding: .48rem .7rem; border: 1px solid #dee2e6; vertical-align: middle; }
+        .cr-tbl tbody tr:nth-child(even) td { background: #fafafa; }
+
+        /* ── Signature row ── */
+        .cr-sig-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .75rem; margin-top: .75rem; }
+        .cr-sig-cell { border: 1px solid #dee2e6; padding: .5rem .75rem; border-radius: 3px; }
+        .cr-sig-cell .sc-label { font-size: .67rem; font-weight: 700; color: #868e96; text-transform: uppercase; letter-spacing: .04em; }
+        .cr-sig-cell .sc-value { font-size: .88rem; color: #212529; margin-top: .2rem; }
+        .cr-sig-img { max-width: 130px; height: auto; display: block; border: 1px solid #dee2e6; padding: 3px; background: #fff; }
+
+        /* ── Workflow step rows ── */
+        .cr-wf-step {
+            display: flex; align-items: center; gap: .75rem;
+            padding: .55rem .7rem; border: 1px solid #e9ecef;
+            margin-top: -1px;
+        }
+        .cr-wf-icon {
+            width: 28px; height: 28px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: .7rem; flex-shrink: 0;
+        }
+        .cr-wf-icon.approved { background: #d4edda; color: #155724; }
+        .cr-wf-icon.rejected { background: #f8d7da; color: #721c24; }
+        .cr-wf-icon.pending  { background: #fff3cd; color: #856404; }
+        .cr-wf-info { flex: 1; min-width: 0; }
+        .cr-wf-role { font-size: .82rem; font-weight: 600; color: #212529; }
+        .cr-wf-person { font-size: .78rem; color: #6c757d; }
+        .cr-wf-remark { font-size: .76rem; color: #868e96; font-style: italic; margin-top: .1rem; }
+        .cr-wf-badge { font-size: .7rem; font-weight: 600; padding: .2rem .5rem; border-radius: 3px; }
+        .cr-wf-badge.approved { background: #d4edda; color: #155724; }
+        .cr-wf-badge.rejected { background: #f8d7da; color: #721c24; }
+        .cr-wf-badge.pending  { background: #fff3cd; color: #856404; }
+        .cr-wf-sig { flex-shrink: 0; }
+        .cr-wf-sig img { height: 32px; border: 1px solid #dee2e6; border-radius: 3px; padding: 2px; background: #fff; }
+
+        /* ── Action bar ── */
+        .cr-action-bar {
+            display: flex; align-items: center; justify-content: space-between;
+            border-top: 2px solid #e9ecef; padding: .85rem 0 0; margin-top: 1.5rem;
+        }
+        .cr-action-bar .ai-info { font-size: .82rem; color: #6c757d; }
+
+        /* ── Attachments ── */
+        .cr-att-chip {
+            display: inline-flex; align-items: center; gap: .35rem;
+            border: 1px solid #c8e6c9; background: #f1f8e9; color: #33691e;
+            border-radius: 3px; padding: .28rem .65rem; font-size: .8rem; font-weight: 500;
+            text-decoration: none;
+        }
+        .cr-att-chip:hover { background: #dcedc8; color: #1b5e20; }
+
+        @media (max-width: 600px) {
+            .cr-info-grid { grid-template-columns: 1fr 1fr; }
+            .cr-a4 { padding: 1.2rem 1rem; }
+            .cr-section-heading { margin-left: -1rem; margin-right: -1rem; padding-left: 1rem; }
+            .cr-sig-row { grid-template-columns: 1fr; }
+            .cr-priority-row { flex-direction: column; }
+        }
+
+        @media print {
+            .no-print, .cr-action-bar { display: none !important; }
+            .cr-shell { background: #fff !important; padding: 0 !important; }
+            .cr-a4 { box-shadow: none !important; max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
+            .cr-section-heading { margin-left: 0 !important; margin-right: 0 !important; padding-left: .85rem !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .content-wrapper, .page-wrapper { margin: 0 !important; padding: 0 !important; }
+            @page { size: A4 portrait; margin: 12mm; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+    </style>
+
+    @php
+        $changeType = $changeRequest->change_type ?? 'non_price';
+        $isPriceChange = $changeType === 'price';
+        $wfStatus = strtolower($changeRequest->workflow->work_flow_status ?? 'pending');
+        $isCompleted = $changeRequest->workflow->work_flow_completed ?? 0;
+        $isApproved = $isCompleted == 1 && !str_contains($wfStatus, 'rejected');
+        $isRejected = str_contains($wfStatus, 'rejected') || $isCompleted == 2;
+    @endphp
+
+    <div class="cr-shell">
+        <div class="cr-a4">
+
+            {{-- ── Document Header ── --}}
+            <div class="cr-doc-header">
+                <img src="{{ asset('assets/img/ccbrt.jpg') }}" alt="CCBRT Logo" class="doc-logo">
+                <div class="doc-title">
+                    <div class="main-title">Change Request Form</div>
+                    <div class="sub-title">{{ $isPriceChange ? 'Price Change Request' : 'Non-Price Change Request' }}</div>
+                </div>
+
+            </div>
+
+
+
+            {{-- ── Alerts ── --}}
+            @if (session('success'))
+                <div class="alert alert-success alert-dismissible fade show" role="alert" style="font-size:.85rem;">
+                    {{ session('success') }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            @endif
+            @if (session('error'))
+                <div class="alert alert-danger alert-dismissible fade show" role="alert" style="font-size:.85rem;">
+                    {{ session('error') }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            @endif
+
+            {{-- ══ ORIGINATOR DETAILS ══ --}}
+            <div class="cr-section-heading"><i class="fas fa-user"></i> Originator Details</div>
+            <div class="cr-info-grid">
+                <div class="cr-info-cell span2">
+                    <div class="ic-label">Requester's Full Name</div>
+                    <div class="ic-value">
+                        @if ($changeRequest->user)
+                            {{ $changeRequest->user->fname ?? '' }} {{ $changeRequest->user->mname ?? '' }} {{ $changeRequest->user->lname ?? '' }}
+                        @else
+                            N/A
+                        @endif
+                    </div>
+                </div>
+                <div class="cr-info-cell">
+                    <div class="ic-label">Department</div>
+                    <div class="ic-value">{{ $changeRequest->user->department->dept_name ?? 'N/A' }}</div>
+                </div>
+                <div class="cr-info-cell">
+                    <div class="ic-label">Submission Date</div>
+                    <div class="ic-value">{{ $changeRequest->created_at->format('d M Y, h:i A') }}</div>
+                </div>
+                <div class="cr-info-cell">
+                    <div class="ic-label">Change Type</div>
+                    <div class="ic-value">
+                        <span style="background:#007A33;color:#fff;padding:.15rem .5rem;border-radius:3px;font-size:.78rem;font-weight:600;">
+                            {{ $isPriceChange ? 'Price Change' : 'Non-Price Change' }}
+                        </span>
+                    </div>
+                </div>
+                @if ($changeRequest->change_category)
+                    <div class="cr-info-cell">
+                        <div class="ic-label">Change Category</div>
+                        <div class="ic-value">{{ $changeRequest->change_category }}</div>
+                    </div>
+                @endif
+            </div>
+
+            {{-- ══ PRIORITY LEVEL ══ --}}
+            <div class="cr-section-heading"><i class="fas fa-flag"></i> Priority Level</div>
+            <div class="cr-priority-row">
+                <div class="cr-priority-pill {{ $changeRequest->priority === 'P3-Low' ? 'active-low' : '' }}">
+                    @if ($changeRequest->priority === 'P3-Low') <i class="fas fa-check-circle"></i> @endif
+                    P3 — Low
+                </div>
+                <div class="cr-priority-pill {{ $changeRequest->priority === 'P2-Medium' ? 'active-medium' : '' }}">
+                    @if ($changeRequest->priority === 'P2-Medium') <i class="fas fa-check-circle"></i> @endif
+                    P2 — Medium
+                </div>
+                <div class="cr-priority-pill {{ $changeRequest->priority === 'P1-High' ? 'active-high' : '' }}">
+                    @if ($changeRequest->priority === 'P1-High') <i class="fas fa-check-circle"></i> @endif
+                    P1 — High
+                </div>
+            </div>
+
+            {{-- ══ DESCRIPTION OF CHANGE ══ --}}
+            <div class="cr-section-heading"><i class="fas fa-file-alt"></i> Description of Change(s)</div>
+            <div class="cr-content-box">
+                {!! nl2br(e($changeRequest->description_of_change ?? 'N/A')) !!}
+            </div>
+
+            {{-- ══ REASON FOR CHANGE ══ --}}
+            <div class="cr-section-heading"><i class="fas fa-question-circle"></i> Reason for Change</div>
+            <div class="cr-content-box">
+                {!! nl2br(e($changeRequest->reason_for_change ?? 'N/A')) !!}
+            </div>
+
+            {{-- ══ TARIFF DETAILS (price changes) ══ --}}
+            @if ($isPriceChange && $changeRequest->tariff_type)
+                <div class="cr-section-heading"><i class="fas fa-tags"></i> Tariff Details</div>
+                <div class="cr-info-grid">
+                    <div class="cr-info-cell">
+                        <div class="ic-label">Tariff Type</div>
+                        <div class="ic-value">
+                            <span style="background:#007A33;color:#fff;padding:.15rem .5rem;border-radius:3px;font-size:.78rem;font-weight:600;">
+                                {{ $changeRequest->tariff_type === 'new_tariff' ? 'New Tariff' : 'Edit Tariff' }}
+                            </span>
+                        </div>
+                    </div>
+                    @if ($changeRequest->tariff_category_id)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">Tariff Category</div>
+                            <div class="ic-value">{{ $changeRequest->tariffCategory->name ?? 'N/A' }}</div>
+                        </div>
+                    @endif
+                    @if ($changeRequest->tariff_type === 'edit_tariff' && $changeRequest->current_tariff_name)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">Current Tariff Name</div>
+                            <div class="ic-value">{{ $changeRequest->current_tariff_name }}</div>
+                        </div>
+                    @endif
+                    @if ($changeRequest->tariff_name)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">{{ $changeRequest->tariff_type === 'new_tariff' ? 'Tariff Name' : 'New Tariff Name' }}</div>
+                            <div class="ic-value">{{ $changeRequest->tariff_name }}</div>
+                        </div>
+                    @endif
+                </div>
+            @endif
+
+            {{-- ══ SERVICE DETAILS (price changes) ══ --}}
+            @if ($isPriceChange && $changeRequest->service_action_type)
+                <div class="cr-section-heading"><i class="fas fa-concierge-bell"></i> Service Details</div>
+                <div class="cr-info-grid">
+                    <div class="cr-info-cell">
+                        <div class="ic-label">Service Action Type</div>
+                        <div class="ic-value">
+                            <span style="background:#007A33;color:#fff;padding:.15rem .5rem;border-radius:3px;font-size:.78rem;font-weight:600;">
+                                {{ $changeRequest->service_action_type === 'new_service' ? 'New Service' : 'Edit Service' }}
+                            </span>
+                        </div>
+                    </div>
+                    @if ($changeRequest->service_category_id)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">Service Category</div>
+                            <div class="ic-value">{{ $changeRequest->serviceCategory->name ?? 'N/A' }}</div>
+                        </div>
+                    @endif
+                    @if ($changeRequest->service_action_type === 'edit_service' && $changeRequest->current_service_name)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">Current Service Name</div>
+                            <div class="ic-value">{{ $changeRequest->current_service_name }}</div>
+                        </div>
+                    @endif
+                    @if ($changeRequest->service_name)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">{{ $changeRequest->service_action_type === 'new_service' ? 'Service Name' : 'New Service Name' }}</div>
+                            <div class="ic-value">{{ $changeRequest->service_name }}</div>
+                        </div>
+                    @endif
+                </div>
+                @if ($changeRequest->service_action_type === 'new_service' && $changeRequest->service_prices)
+                    @php
+                        $servicePrices = is_array($changeRequest->service_prices) ? $changeRequest->service_prices : json_decode($changeRequest->service_prices, true);
+                    @endphp
+                    @if ($servicePrices && is_array($servicePrices))
+                        <table class="cr-tbl mt-3">
+                            <thead>
+                                <tr><th>Payment Type</th><th style="text-align:right">Price</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($servicePrices as $type => $price)
+                                    <tr>
+                                        <td><strong>{{ ucfirst(str_replace('_', ' ', $type)) }}</strong></td>
+                                        <td style="text-align:right">{{ number_format($price, 2) }} TZS</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    @endif
+                @endif
+            @endif
+
+            {{-- ══ PRICE CHANGE DETAILS ══ --}}
+            @if ($isPriceChange && $changeRequest->price_item_name)
+                <div class="cr-section-heading"><i class="fas fa-money-bill-wave"></i> Price Change Details</div>
+                <div class="cr-info-grid">
+                    <div class="cr-info-cell span2">
+                        <div class="ic-label">Item / Service Name</div>
+                        <div class="ic-value" style="font-weight:600;">{{ $changeRequest->price_item_name }}</div>
+                    </div>
+                    @if ($changeRequest->price_change_reason)
+                        <div class="cr-info-cell">
+                            <div class="ic-label">Price Change Reason</div>
+                            <div class="ic-value">{{ $changeRequest->price_change_reason }}</div>
+                        </div>
+                    @endif
+                </div>
+                @php
+                    $currentPrices = is_array($changeRequest->current_price) ? $changeRequest->current_price : (is_string($changeRequest->current_price) ? json_decode($changeRequest->current_price, true) : []);
+                    $newPrices = is_array($changeRequest->new_price) ? $changeRequest->new_price : (is_string($changeRequest->new_price) ? json_decode($changeRequest->new_price, true) : []);
+                @endphp
+                @if (!empty($currentPrices) || !empty($newPrices))
+                    <table class="cr-tbl mt-3">
+                        <thead>
+                            <tr><th>Payment Type</th><th style="text-align:right">Current Price</th><th style="text-align:right">New Price</th><th style="text-align:right">Difference</th></tr>
+                        </thead>
+                        <tbody>
+                            @php $allTypes = array_unique(array_merge(array_keys($currentPrices ?? []), array_keys($newPrices ?? []))); @endphp
+                            @foreach ($allTypes as $type)
+                                @php
+                                    $current = $currentPrices[$type] ?? 0;
+                                    $new = $newPrices[$type] ?? 0;
+                                    $difference = $new - $current;
+                                @endphp
+                                <tr>
+                                    <td><strong>{{ ucfirst(str_replace('_', ' ', $type)) }}</strong></td>
+                                    <td style="text-align:right">{{ number_format($current, 2) }} TZS</td>
+                                    <td style="text-align:right">{{ number_format($new, 2) }} TZS</td>
+                                    <td style="text-align:right;color:{{ $difference > 0 ? '#28a745' : ($difference < 0 ? '#dc3545' : '#6c757d') }};font-weight:600;">
+                                        {{ $difference > 0 ? '+' : '' }}{{ number_format($difference, 2) }} TZS
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                @endif
+            @endif
+
+            {{-- ══ IMPLEMENTATION NOTES ══ --}}
+            @if ($changeRequest->implementation_notes)
+                <div class="cr-section-heading"><i class="fas fa-sticky-note"></i> Implementation Notes</div>
+                <div class="cr-content-box">
+                    {!! nl2br(e($changeRequest->implementation_notes)) !!}
+                </div>
+            @endif
+
+            {{-- ══ SUPPORTING DOCUMENT ══ --}}
+            @if ($changeRequest->supporting_document)
+                <div class="cr-section-heading"><i class="fas fa-paperclip"></i> Supporting Document</div>
+                <div class="mb-2">
+                    <a href="{{ asset('storage/' . $changeRequest->supporting_document) }}" target="_blank" class="cr-att-chip">
+                        <i class="fas fa-download"></i> Download Document
+                    </a>
+                </div>
+                <div style="border:1px solid #dee2e6;border-radius:3px;overflow:hidden;">
+                    <iframe src="{{ asset('storage/' . $changeRequest->supporting_document) }}" width="100%" height="500px" style="border:none;"></iframe>
+                </div>
+            @endif
+
+            {{-- ══ APPROVAL WORKFLOW ══ --}}
+            <div class="cr-section-heading"><i class="fas fa-project-diagram"></i> Approval Workflow</div>
+            @php
+                $workflowHistories = $changeRequest->workflow->histories ?? collect();
+                $steps = $isPriceChange
+                    ? ['Line Manager', 'Price Committee', 'HEC Member', 'IT']
+                    : ['Line Manager', 'HEC Member', 'IT'];
+                $stepGroups = [];
+                foreach ($steps as $stepName) {
+                    $hists = $workflowHistories->where('step_name', $stepName);
+                    if ($hists->count() > 0) $stepGroups[$stepName] = $hists;
+                }
+            @endphp
+
+            @foreach ($stepGroups as $stepName => $histories)
+                @php
+                    if ($stepName === 'IT') {
+                        $approvedHistory = $histories->where('status', 1)->first();
+                        $iterableHistories = $approvedHistory ? collect([$approvedHistory]) : collect([$histories->first()]);
+                    } else {
+                        $iterableHistories = $histories;
+                    }
+                @endphp
+                @foreach ($iterableHistories as $history)
+                    @php
+                        $person = null; $signature = null;
+                        if ($history->status == 1 && $history->who_approve && $history->approver) {
+                            $person = $history->approver;
+                            $signature = $person->signature ?? null;
+                        } elseif ($history->status == 2) {
+                            $person = $history->attendedBy;
+                        } else {
+                            $person = $history->attendedBy;
+                        }
+
+                        if ($history->status == 1) {
+                            $remark = !empty($history->comments) ? $history->comments : ($history->remark ?? '');
+                        } elseif ($history->status == 2) {
+                            $remark = $history->rejection_reason ?? ($history->comments ?? ($history->remark ?? ''));
+                        } else {
+                            $remark = $history->remark ?? '';
+                        }
+                        $defaultMessages = ['Awaiting Line Manager approval','Awaiting approval from Price Committee','Awaiting approval from HEC Member','Awaiting approval from IT','Awaiting Price Committee approval','Awaiting HEC Member approval','Awaiting HEC Member approval (Line Manager request)','Awaiting Price Committee approval (Line Manager request)'];
+                        $isDefaultMsg = false;
+                        foreach ($defaultMessages as $dm) { if (str_contains($remark, $dm)) { $isDefaultMsg = true; break; } }
+                        if (empty(trim($remark)) || $isDefaultMsg) $remark = '';
+
+                        $sClass = $history->status == 1 ? 'approved' : ($history->status == 2 ? 'rejected' : 'pending');
+                        $sText = $history->status == 1 ? 'Approved' : ($history->status == 2 ? 'Rejected' : 'Pending');
+                        $sIcon = $history->status == 1 ? 'fa-check' : ($history->status == 2 ? 'fa-times' : 'fa-clock');
+                    @endphp
+                    <div class="cr-wf-step">
+                        <div class="cr-wf-icon {{ $sClass }}"><i class="fas {{ $sIcon }}"></i></div>
+                        <div class="cr-wf-info">
+                            <div class="cr-wf-role">
+                                {{ $stepName }}
+                                <span class="cr-wf-badge {{ $sClass }} ms-2">{{ $sText }}</span>
+                            </div>
+                            <div class="cr-wf-person">
+                                @if ($person)
+                                    {{ $person->fname ?? '' }} {{ $person->lname ?? '' }}
+                                    @if ($person->jobTitle)
+                                        — {{ $person->jobTitle->name ?? '' }}
+                                    @endif
+                                @else
+                                    Awaiting assignment
+                                @endif
+                            </div>
+                            @if ($remark)
+                                <div class="cr-wf-remark">"{{ $remark }}"</div>
+                            @endif
+                        </div>
+                        <div class="cr-wf-sig">
+                            @if ($signature && $history->status == 1)
+                                <img src="data:image/png;base64,{{ $signature }}" alt="Signature">
+                            @endif
+                        </div>
+                    </div>
+                @endforeach
+            @endforeach
+
+            {{-- ══ ACTION BAR ══ --}}
+            @php
+                $currentPendingHistory = $changeRequest->workflow->histories
+                    ->where('attended_by', Auth::user()->id)
+                    ->where('status', 0)
+                    ->first();
+            @endphp
+
+            <div class="cr-action-bar no-print">
+                <div class="ai-info">
+                    @if (auth()->user()->can('view change management') || auth()->user()->hasAnyRole(['price_committee','cms','cfo','coo','it','super-admin']))
+                        <strong>{{ $changeRequest->user->fname ?? '' }} {{ $changeRequest->user->lname ?? '' }}</strong>
+                        &mdash; {{ $changeRequest->user->department->dept_name ?? 'N/A' }}
+                        @if ($isApproved)
+                            <span class="badge bg-success ms-1" style="font-size:.72rem;">Approved</span>
+                        @elseif ($isRejected)
+                            <span class="badge bg-danger ms-1" style="font-size:.72rem;">Rejected</span>
+                        @else
+                            <span class="badge ms-1" style="font-size:.72rem;background:#007A33;color:#fff;">Pending</span>
+                        @endif
+                    @endif
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" id="backButton">
+                        <i class="fas fa-arrow-left me-1"></i> Back
+                    </button>
+                    @if ($isCompleted)
+                        <a href="{{ route('change_request.pdf', $changeRequest->id) }}" target="_blank" class="btn btn-sm btn-outline-success">
+                            <i class="fas fa-file-pdf me-1"></i> PDF
+                        </a>
+                    @endif
+                    @if ($currentPendingHistory && !$isCompleted)
+                        <button class="btn btn-sm btn-success" id="approveBtn">
+                            <i class="fas fa-check me-1"></i> Approve
+                        </button>
+                        <button class="btn btn-sm btn-danger" id="rejectBtn">
+                            <i class="fas fa-times me-1"></i> Reject
+                        </button>
+                    @endif
+                </div>
+            </div>
+
+        </div>{{-- end cr-a4 --}}
+    </div>{{-- end cr-shell --}}
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+        document.getElementById('backButton').addEventListener('click', () => window.history.back());
+
+        @if ($currentPendingHistory && !$isCompleted)
+        document.getElementById('approveBtn').addEventListener('click', function() {
+            Swal.fire({
+                title: 'Approve Change Request',
+                html: '<div class="mb-3"><label for="swal-approval-comments" class="form-label text-start d-block mb-2"><strong>Comments (Optional)</strong></label><textarea id="swal-approval-comments" class="form-control" rows="4" placeholder="Add any comments or notes..." style="min-height:100px;resize:vertical;"></textarea></div>',
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: '<i class="fas fa-check-circle me-1"></i> Approve',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#007A33',
+                preConfirm: () => document.getElementById('swal-approval-comments').value.trim()
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    Swal.fire({ title: 'Approving...', html: '<div class="text-center"><div class="spinner-border text-success"></div><p class="mt-3">Please wait...</p></div>', allowOutsideClick: false, showConfirmButton: false, didOpen: () => Swal.showLoading() });
+                    const formData = new FormData();
+                    formData.append('_token', document.querySelector('meta[name="csrf-token"]').content);
+                    if (result.value) formData.append('comments', result.value);
+                    fetch('{{ route('change_request.approve', $changeRequest->id) }}', { method: 'POST', body: formData, headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content, 'Accept': 'application/json' } })
+                    .then(async r => { if (!r.headers.get('content-type')?.includes('application/json')) throw new Error('Non-JSON response'); if (!r.ok) throw await r.json(); return r.json(); })
+                    .then(d => { Swal.fire({ icon: d.icon||'success', title: d.title||'Success', text: d.text||d.message||'Approved.', timer: 2000, showConfirmButton: false }).then(() => window.location.reload()); })
+                    .catch(e => { Swal.fire({ icon: 'error', title: 'Error', text: 'Failed: '+(e.text||e.message||'Unknown error') }); });
+                }
+            });
+        });
+
+        document.getElementById('rejectBtn').addEventListener('click', function() {
+            Swal.fire({
+                title: 'Reject Change Request',
+                html: '<div class="mb-3"><label for="swal-rejection-reason" class="form-label text-start d-block mb-2"><strong>Reason for Rejection <span class="text-danger">*</span></strong></label><textarea id="swal-rejection-reason" class="form-control" rows="4" required placeholder="Please provide a reason..." style="min-height:100px;resize:vertical;"></textarea></div>',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: '<i class="fas fa-times-circle me-1"></i> Reject',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#dc3545',
+                preConfirm: () => { const r = document.getElementById('swal-rejection-reason').value.trim(); if (!r) { Swal.showValidationMessage('Please provide a reason.'); return false; } return r; }
+            }).then((result) => {
+                if (result.isConfirmed && result.value) {
+                    Swal.fire({ title: 'Rejecting...', html: '<div class="text-center"><div class="spinner-border text-danger"></div><p class="mt-3">Please wait...</p></div>', allowOutsideClick: false, showConfirmButton: false, didOpen: () => Swal.showLoading() });
+                    const formData = new FormData();
+                    formData.append('_token', document.querySelector('meta[name="csrf-token"]').content);
+                    formData.append('rejection_reason', result.value);
+                    fetch('{{ route('change_request.reject', $changeRequest->id) }}', { method: 'POST', body: formData, headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content, 'Accept': 'application/json' } })
+                    .then(async r => { if (!r.headers.get('content-type')?.includes('application/json')) throw new Error('Non-JSON response'); if (!r.ok) throw await r.json(); return r.json(); })
+                    .then(d => { Swal.fire({ icon: d.icon||'success', title: d.title||'Success', text: d.text||d.message||'Rejected.', timer: 2000, showConfirmButton: false }).then(() => window.location.reload()); })
+                    .catch(e => { Swal.fire({ icon: 'error', title: 'Error', text: 'Failed: '+(e.text||e.message||'Unknown error') }); });
+                }
+            });
+        });
+        @endif
+    </script>
+@endsection

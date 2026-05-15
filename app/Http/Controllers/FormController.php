@@ -7,12 +7,14 @@ use App\Models\IctAccessResource;
 use App\Models\Workflow;
 use App\Models\WorkFlowHistory;
 use App\Models\User;
+use App\Models\Departments;
 use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
 use App\Http\Controllers\IctAccessController;
 use App\Models\Clearance_work_flow;
 use App\Models\Clearance_work_flow_history;
 use App\Models\ClearanceForm;
+use App\Models\Contract;
 use App\Models\UserSession;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\ApprovalRequestNotification;
@@ -58,37 +60,313 @@ class FormController extends Controller
         //                  'h_m_i_s_access_levels.names',
         //                 // 'work_flow_histories.forwarded_by'
         //             ]);
+        // First, get the ICT access resource and workflow
+        $ictAccessResource = IctAccessResource::find($request->id);
+        if (!$ictAccessResource) {
+            Alert::error('Error', 'ICT Access Form not found.');
+            return redirect()->route('requestapprove.index')->with('error', 'ICT Access Form not found.');
+        }
+
+        $workflow = Workflow::where('ict_request_resource_id', $request->id)->first();
+        if (!$workflow) {
+            Alert::error('Error', 'Workflow not found for this form.');
+            return redirect()->route('requestapprove.index')->with('error', 'Workflow not found for this form.');
+        }
+
+        // Log initial access attempt for debugging
+        $allWorkflowHistories = WorkFlowHistory::where('work_flow_id', $workflow->id)->get();
+        Log::info('ICT Access Form: View attempt', [
+            'viewer_user_id' => $user->id,
+            'viewer_username' => $user->username,
+            'viewer_roles' => $user->getRoleNames()->toArray(),
+            'form_id' => $request->id,
+            'workflow_id' => $workflow->id,
+            'workflow_user_id' => $workflow->user_id,
+            'workflow_histories_count' => $allWorkflowHistories->count(),
+            'workflow_histories' => $allWorkflowHistories->map(function($h) {
+                return [
+                    'id' => $h->id,
+                    'attended_by' => $h->attended_by,
+                    'status' => $h->status,
+                    'step_name' => $h->step_name,
+                ];
+            })->toArray(),
+        ]);
+
+        // Check if user has permission to view this form:
+        // 1. User is the requester (created the form)
+        // 2. User has a pending workflow history (status = 0) for this form
+        // 3. User has an approved workflow history (status = 1) for this form (for review)
+        // 4. User is an HEC member viewing a form from their department
+        // 5. User is CEO viewing a form from an HEC member
+        $isRequester = $workflow->user_id === $user->id;
+        $hasWorkflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->where('attended_by', $user->id)
+            ->exists();
+        
+        // Fetch requester user once for all checks and logging
+        $requesterUser = User::find($workflow->user_id);
+        $canIctAccessReport = $user->can('ict_acces_report');
+        
+        // Also check if user is HEC member and form was submitted by someone in their department
+        $isHecMember = $user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
+        $isCeo = $user->hasRole('ceo');
+        $canViewAsHec = false;
+        $canViewAsCeo = false;
+        
+        if ($isHecMember && !$isRequester && !$hasWorkflowHistory && $requesterUser) {
+            // Check if the requester's department is under this HEC member's oversight
+            if ($requesterUser->department) {
+                $requesterHec = $requesterUser->department->hec;
+                if ($requesterHec) {
+                    $hecRoleMapping = [
+                        'COO' => 'coo',
+                        'CFO' => 'cfo',
+                        'CMS' => 'cms',
+                        'CCDRO' => 'ccdro',
+                    ];
+                    $requiredHecRole = $hecRoleMapping[$requesterHec->hec_level_name] ?? null;
+                    if ($requiredHecRole && $user->hasRole($requiredHecRole)) {
+                        $canViewAsHec = true;
+                    }
+                }
+            }
+        }
+        
+        // Check if CEO is viewing a form - CEO can view any pending ICT form
+        if ($isCeo && !$isRequester && !$hasWorkflowHistory) {
+            // CEO can view forms from HEC members (coo, cfo, cms, ccdro)
+            if ($requesterUser) {
+                $isRequesterHecMember = $requesterUser->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
+                if ($isRequesterHecMember) {
+                    $canViewAsCeo = true;
+                }
+            }
+            
+            // Also check if there's a pending workflow history with step "CEO Approval" for this form
+            $hasCeoApprovalStep = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('step_name', 'like', '%CEO%')
+                ->exists();
+            if ($hasCeoApprovalStep) {
+                $canViewAsCeo = true;
+            }
+            
+            // CEO can view any form that has a pending workflow step
+            // This is important because CEO may need to view forms even if not directly assigned
+            $hasPendingStep = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0) // Pending
+                ->exists();
+            if ($hasPendingStep) {
+                $canViewAsCeo = true;
+            }
+        }
+
+        // Get workflow history details for logging
+        $workflowHistories = WorkFlowHistory::where('work_flow_id', $workflow->id)
+            ->orderBy('id', 'desc')
+            ->get(['id', 'attended_by', 'step_name', 'status', 'forwarded_by']);
+        
+        $requesterRoles = $requesterUser ? $requesterUser->getRoleNames()->toArray() : [];
+        $userRoles = $user->getRoleNames()->toArray();
+
+        if (!$isRequester && !$hasWorkflowHistory && !$canViewAsHec && !$canViewAsCeo && !$canIctAccessReport) {
+            // Determine which permission is missing and what's required
+            $missingPermissions = [];
+            $requiredPermissions = [];
+            
+            if (!$isRequester) {
+                $missingPermissions[] = 'User is not the requester';
+            }
+            
+            if (!$hasWorkflowHistory) {
+                $missingPermissions[] = 'User has no workflow history assigned';
+                // Check what the current pending step is
+                $pendingHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                    ->where('status', 0)
+                    ->orderBy('id', 'desc')
+                    ->first();
+                if ($pendingHistory) {
+                    $requiredPermissions[] = "User needs to be assigned to workflow step: '{$pendingHistory->step_name}' (ID: {$pendingHistory->id}, Currently assigned to User ID: {$pendingHistory->attended_by})";
+                } else {
+                    $requiredPermissions[] = 'No pending workflow step found - form may be completed or rejected';
+                }
+            }
+            
+            if ($isHecMember && !$canViewAsHec) {
+                $missingPermissions[] = 'User is HEC member but cannot view as HEC (requester department mismatch)';
+                if ($requesterUser && $requesterUser->department && $requesterUser->department->hec) {
+                    $requiredPermissions[] = "Requester's department HEC level: '{$requesterUser->department->hec->hec_level_name}' - User needs matching HEC role";
+                }
+            }
+            
+            if ($isCeo && !$canViewAsCeo) {
+                $missingPermissions[] = 'User is CEO but cannot view (requester is not HEC member or no CEO approval step)';
+                if ($requesterUser) {
+                    $isRequesterHecMember = $requesterUser->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
+                    if (!$isRequesterHecMember) {
+                        $requiredPermissions[] = 'Requester is not an HEC member - CEO can only view HEC member requests';
+                    }
+                }
+                $hasCeoStep = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                    ->where('step_name', 'like', '%CEO%')
+                    ->exists();
+                if (!$hasCeoStep) {
+                    $requiredPermissions[] = 'No CEO approval step found in workflow history';
+                }
+            }
+            
+            if (!$isHecMember && !$isCeo) {
+                $requiredPermissions[] = 'User is not an HEC member or CEO - needs workflow history assignment to view';
+            }
+            
+            // Get current pending workflow step details
+            $pendingHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->orderBy('id', 'desc')
+                ->first();
+            
+            // Log detailed permission check failure with explicit requirements
+            Log::warning('ICT Access Form: Permission denied - Missing Requirements', [
+                '=== PERMISSION DENIED ===' => 'User does not have permission to view this form',
+                'user_id' => $user->id,
+                'user_name' => trim(($user->fname ?? '') . ' ' . ($user->lname ?? '')) ?: $user->username,
+                'user_username' => $user->username,
+                'user_roles' => $userRoles,
+                'form_id' => $request->id,
+                'workflow_id' => $workflow->id,
+                'requester_id' => $workflow->user_id,
+                'requester_name' => $requesterUser ? (trim(($requesterUser->fname ?? '') . ' ' . ($requesterUser->lname ?? '')) ?: $requesterUser->username) : 'Unknown',
+                'requester_username' => $requesterUser ? $requesterUser->username : 'Unknown',
+                'requester_roles' => $requesterRoles,
+                '=== PERMISSION CHECKS ===' => [
+                    'is_requester' => $isRequester,
+                    'has_workflow_history' => $hasWorkflowHistory,
+                    'is_hec_member' => $isHecMember,
+                    'is_ceo' => $isCeo,
+                    'can_view_as_hec' => $canViewAsHec,
+                    'can_view_as_ceo' => $canViewAsCeo,
+                    'can_view_as_ict_access_report' => $canIctAccessReport,
+                ],
+                '=== MISSING PERMISSIONS ===' => $missingPermissions,
+                '=== REQUIRED PERMISSIONS/ACTIONS ===' => $requiredPermissions,
+                '=== CURRENT WORKFLOW STATUS ===' => [
+                    'workflow_status' => $workflow->work_flow_status,
+                    'workflow_completed' => $workflow->work_flow_completed,
+                    'pending_step' => $pendingHistory ? [
+                        'id' => $pendingHistory->id,
+                        'step_name' => $pendingHistory->step_name,
+                        'attended_by' => $pendingHistory->attended_by,
+                        'attended_by_user' => $pendingHistory->attended_by ? (User::find($pendingHistory->attended_by)?->username ?? 'User not found') : 'Not assigned',
+                        'status' => $pendingHistory->status,
+                    ] : 'No pending step',
+                ],
+                '=== ALL WORKFLOW HISTORIES ===' => $workflowHistories->map(function($history) {
+                    $attendedByUser = $history->attended_by ? (User::find($history->attended_by)?->username ?? 'User not found') : 'Not assigned';
+                    return [
+                        'id' => $history->id,
+                        'step_name' => $history->step_name,
+                        'attended_by' => $history->attended_by,
+                        'attended_by_username' => $attendedByUser,
+                        'status' => $history->status . ($history->status == 0 ? ' (Pending)' : ($history->status == 1 ? ' (Approved)' : ' (Rejected)')),
+                        'forwarded_by' => $history->forwarded_by,
+                    ];
+                })->toArray(),
+            ]);
+            
+            Alert::error('Error', 'ICT Access Form not found or you do not have permission to view it.');
+            return redirect()->route('requestapprove.index')->with('error', 'ICT Access Form not found or you do not have permission to view it.');
+        }
+
+        // Get the workflow history for the current user (if exists) or the latest pending one
+        $workflowHistory = null;
+        if ($hasWorkflowHistory) {
+            // Get the most recent workflow history for this user
+            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('attended_by', $user->id)
+                ->orderBy('id', 'desc')
+                ->first();
+        } else {
+            // Get the latest pending workflow history
+            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                ->where('status', 0)
+                ->orderBy('id', 'desc')
+                ->first();
+            
+            // If no pending workflow history found, get any workflow history for this workflow
+            // This is important for CEO/HEC members who can view but aren't directly assigned
+            if (!$workflowHistory && ($canViewAsCeo || $canViewAsHec || $isRequester)) {
+                $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                    ->orderBy('id', 'desc')
+                    ->first();
+            }
+        }
+
+        // Now build the form data query
+        // Use LEFT JOINs for optional tables to prevent query failure
         $ictForm = IctAccessResource::join('users', 'users.id', '=', 'ict_access_resources.userId')
             ->join('workflows', 'workflows.ict_request_resource_id', '=', 'ict_access_resources.id')
-            ->join('work_flow_histories', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
-            ->join('privilege_levels', 'privilege_levels.id', '=', 'ict_access_resources.privilegeId')
+            ->leftJoin('work_flow_histories', function($join) use ($workflowHistory) {
+                $join->on('work_flow_histories.work_flow_id', '=', 'workflows.id');
+                if ($workflowHistory) {
+                    $join->where('work_flow_histories.id', '=', $workflowHistory->id);
+                }
+            })
+            ->leftJoin('privilege_levels', 'privilege_levels.id', '=', 'ict_access_resources.privilegeId')
             ->leftJoin('nhif_qualifications', 'nhif_qualifications.id', '=', 'ict_access_resources.nhifId')
-            ->join('employment_types', 'employment_types.id', '=', 'users.employment_typeId')
-            ->join('departments', 'departments.id', '=', 'users.deptId')
-            ->join('hecs', 'hecs.id', '=', 'departments.hec_id')
-            // ->join('h_m_i_s_access_levels', function ($join) {
-            //     $join->on(DB::raw("JSON_CONTAINS(ict_access_resources.hmisId, JSON_QUOTE(h_m_i_s_access_levels.id))"), DB::raw('1'), DB::raw('1'));
-            // })
+            ->leftJoin('employment_types', 'employment_types.id', '=', 'users.employment_typeId')
+            ->leftJoin('departments', 'departments.id', '=', 'users.deptId')
+            ->leftJoin('hecs', 'hecs.id', '=', 'departments.hec_id')
             ->where('ict_access_resources.id', $request->id)
-            ->where('work_flow_histories.attended_by', $user->id)
             ->first([
                 'ict_access_resources.*',
                 'users.*',
-                'workflows.*',
-                'work_flow_histories.*',
+                'users.email as user_email',
+                'workflows.id as workflow_id',
+                'workflows.user_id as workflow_user_id',
+                'workflows.ict_request_resource_id',
+                'workflows.status as workflow_status',
+                'workflows.created_at as workflow_created_at',
+                'workflows.updated_at as workflow_updated_at',
+                'work_flow_histories.id as workflow_history_id',
+                'work_flow_histories.forwarded_by',
+                'work_flow_histories.attended_by',
+                'work_flow_histories.status as history_status',
+                'work_flow_histories.remark',
+                'work_flow_histories.attend_date',
+                'work_flow_histories.who_approve',
+                'work_flow_histories.rejection_reason',
+                'work_flow_histories.comments',
+                'work_flow_histories.created_at as history_created_at',
+                'work_flow_histories.updated_at as history_updated_at',
                 'ict_access_resources.id as access_id',
                 'ict_access_resources.hardware_request',
                 'privilege_levels.prv_name',
                 'nhif_qualifications.name',
                 'employment_types.employment_type',
                 'departments.dept_name',
-                'hecs.hec_level_name',
-                // 'h_m_i_s_access_levels.names',
-                'work_flow_histories.forwarded_by'
+                'hecs.hec_level_name'
             ]);
 
         // Check if form exists
         if (!$ictForm) {
+            // Log the failure with details about the query conditions
+            Log::warning('ICT Access Form: Query returned null', [
+                'user_id' => $user->id,
+                'user_name' => trim(($user->fname ?? '') . ' ' . ($user->lname ?? '')) ?: $user->username,
+                'user_roles' => $user->getRoleNames()->toArray(),
+                'form_id' => $request->id,
+                'workflow_id' => $workflow->id,
+                'workflow_history_id' => $workflowHistory ? $workflowHistory->id : 'null',
+                'workflow_history_status' => $workflowHistory ? $workflowHistory->status : 'null',
+                'workflow_history_step_name' => $workflowHistory ? $workflowHistory->step_name : 'null',
+                'permission_context' => [
+                    'is_requester' => $isRequester,
+                    'has_workflow_history' => $hasWorkflowHistory,
+                    'can_view_as_hec' => $canViewAsHec,
+                    'can_view_as_ceo' => $canViewAsCeo,
+                ],
+                'error' => 'Form query returned null - check JOIN conditions',
+            ]);
             Alert::error('Error', 'ICT Access Form not found or you do not have permission to view it.');
             return redirect()->route('requestapprove.index')->with('error', 'ICT Access Form not found or you do not have permission to view it.');
         }
@@ -100,6 +378,9 @@ class FormController extends Controller
             $ictForm->hardware_request = $ictAccessResource->hardware_request;
             // Merge edocs from the direct model fetch
             $ictForm->edocs = $ictAccessResource->edocs;
+            // Ensure ICT email access fields are not overwritten by users.email
+            $ictForm->email = $ictAccessResource->email;
+            $ictForm->requested_email_address = $ictAccessResource->requested_email_address;
         }
 
         // Handle hmisId - it's now JSON, so decode it if it's a string
@@ -160,14 +441,30 @@ class FormController extends Controller
         // dd($hmaccess);
         $approver = null;
         $lineManager = null;
+        $ceoApprover = null;
 
+        // Check if the requester was an HEC member (CEO would have approved)
+        $requesterUser = User::find($ictForm->userId);
+        $isRequesterHecMember = $requesterUser && $requesterUser->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
 
+        // Fetch CEO approver if they approved this form
+        $ceoApprover = User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+            ->whereHas('roles', function ($query) {
+                $query->where('name', 'ceo');
+            })
+            ->where('work_flow_histories.work_flow_id', $ictForm->work_flow_id)
+            ->where('work_flow_histories.status', 1)
+            ->orderBy('work_flow_histories.updated_at', 'desc')
+            ->select('users.*', 'work_flow_histories.updated_at')
+            ->first();
 
-        $users = User::role(['coo', 'cfo', 'cms'])->get();
+        // Check for HEC member approver (coo, cfo, cms, ccdro)
+        $users = User::role(['coo', 'cfo', 'cms', 'ccdro'])->get();
         $roleMapping = [
             'COO' => 'coo',
             'CFO' => 'cfo',
             'CMS' => 'cms',
+            'CCDRO' => 'ccdro',
         ];
 
         $requiredRole = $roleMapping[$ictForm->hec_level_name] ?? null;
@@ -221,11 +518,131 @@ class FormController extends Controller
             ->select('users.*', 'work_flow_histories.updated_at')
             ->first();
 
+        $latestRejectionHistory = WorkFlowHistory::where('work_flow_id', $ictForm->work_flow_id)
+            ->where('status', -1)
+            ->orderBy('id', 'desc')
+            ->first();
+
         // Convert $ictForm to an object with proper relationships if needed
         // The query result should already have the data, but we need to ensure relationships work
         // Since we're using joins, the data is already in the result object
 
-        return view('ict_resource_form', compact('ictForm', 'hmaccess', 'edocsLevels', 'user', 'lineManager', 'itOfficer', 'hrOfficer', 'approver', 'isClinicalDepartment', 'hrWorkflowHistory', 'licenseProviderName', 'requestUser'));
+        return view('ict_resource_form', compact('ictForm', 'hmaccess', 'edocsLevels', 'user', 'lineManager', 'itOfficer', 'hrOfficer', 'approver', 'ceoApprover', 'isRequesterHecMember', 'isClinicalDepartment', 'hrWorkflowHistory', 'licenseProviderName', 'requestUser', 'latestRejectionHistory'));
+    }
+
+    public function getFormPdf(Request $request, $id)
+    {
+        $ictFormBase = IctAccessResource::join('users', 'users.id', '=', 'ict_access_resources.userId')
+            ->leftJoin('workflows', 'workflows.ict_request_resource_id', '=', 'ict_access_resources.id')
+            ->leftJoin('work_flow_histories', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
+            ->leftJoin('privilege_levels', 'privilege_levels.id', '=', 'ict_access_resources.privilegeId')
+            ->leftJoin('nhif_qualifications', 'nhif_qualifications.id', '=', 'ict_access_resources.nhifId')
+            ->leftJoin('employment_types', 'employment_types.id', '=', 'users.employment_typeId')
+            ->leftJoin('departments', 'departments.id', '=', 'users.deptId')
+            ->leftJoin('hecs', 'hecs.id', '=', 'departments.hec_id')
+            ->where('ict_access_resources.id', $id)
+            ->first([
+                'ict_access_resources.*',
+                'users.*',
+                'users.email as user_email',
+                'workflows.*',
+                'work_flow_histories.*',
+                'ict_access_resources.id as access_id',
+                'ict_access_resources.hardware_request',
+                'privilege_levels.prv_name',
+                'nhif_qualifications.name',
+                'employment_types.employment_type',
+                'departments.dept_name',
+                'hecs.hec_level_name',
+                'work_flow_histories.forwarded_by',
+                'work_flow_histories.work_flow_id',
+            ]);
+
+        if (!$ictFormBase) {
+            abort(404, 'ICT Access Form not found.');
+        }
+
+        $ictForm = $ictFormBase;
+
+        // Resolve privilege/level objects
+        $activeDrtPrivilege = $ictForm->active_drt ? \App\Models\PrivilegeLevel::find($ictForm->active_drt) : null;
+        $emailPrivilege     = $ictForm->email       ? \App\Models\PrivilegeLevel::find($ictForm->email)       : null;
+        $vpnPrivilege       = $ictForm->VPN         ? \App\Models\PrivilegeLevel::find($ictForm->VPN)         : null;
+        $pbaxPrivilege      = $ictForm->pbax        ? \App\Models\PrivilegeLevel::find($ictForm->pbax)        : null;
+        $folderPrivilege    = $ictForm->folder_privilege ? \App\Models\PrivilegeLevel::find($ictForm->folder_privilege) : null;
+        $sapLevel           = $ictForm->ASPId       ? \App\Models\SAPLevels::find($ictForm->ASPId)            : null;
+
+        $arutiId = $ictForm->aruti;
+        if (is_array($arutiId)) { $arutiId = !empty($arutiId) ? $arutiId[0] : null; }
+        $arutiPrivilege = $arutiId ? \App\Models\ArutiLevel::find($arutiId) : null;
+
+        $hmisIds = $ictForm->hmisId;
+        if (is_string($hmisIds)) { $hmisIds = json_decode($hmisIds, true); }
+        $hmaccess = !empty($hmisIds) ? \App\Models\HMISAccessLevel::whereIn('id', (array) $hmisIds)->get() : collect([]);
+
+        $edocsIds = $ictForm->edocs;
+        if (is_string($edocsIds)) { $edocsIds = json_decode($edocsIds, true); }
+        $edocsLevels = !empty($edocsIds) ? \App\Models\EdocsLevel::whereIn('id', (array) $edocsIds)->get() : collect([]);
+
+        $requestUser = \App\Models\User::with(['jobTitle', 'department'])->find($ictForm->userId);
+
+        $isRequesterHecMember = $requestUser && $requestUser->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
+        $isClinicalDepartment = $requestUser && $requestUser->jobTitle && $requestUser->jobTitle->clinical_or_non_clinical === 'Clinical';
+
+        $workflowId = $ictForm->work_flow_id;
+
+        $lineManager = \App\Models\User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+            ->whereHas('roles', fn($q) => $q->where('name', 'line-manager'))
+            ->where('work_flow_histories.work_flow_id', $workflowId)
+            ->where('work_flow_histories.status', 1)
+            ->orderBy('work_flow_histories.updated_at', 'desc')
+            ->select('users.*', 'work_flow_histories.updated_at')
+            ->first();
+
+        $itOfficer = \App\Models\User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+            ->whereHas('roles', fn($q) => $q->where('name', 'it'))
+            ->where('work_flow_histories.work_flow_id', $workflowId)
+            ->where('work_flow_histories.status', 1)
+            ->orderBy('work_flow_histories.updated_at', 'asc')
+            ->select('users.*', 'work_flow_histories.updated_at')
+            ->first();
+
+        $hrOfficer = \App\Models\User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+            ->whereHas('roles', fn($q) => $q->where('name', 'hr'))
+            ->where('work_flow_histories.work_flow_id', $workflowId)
+            ->where('work_flow_histories.status', 1)
+            ->orderBy('work_flow_histories.updated_at', 'asc')
+            ->select('users.*', 'work_flow_histories.updated_at')
+            ->first();
+
+        $ceoApprover = \App\Models\User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+            ->whereHas('roles', fn($q) => $q->where('name', 'ceo'))
+            ->where('work_flow_histories.work_flow_id', $workflowId)
+            ->where('work_flow_histories.status', 1)
+            ->orderBy('work_flow_histories.updated_at', 'desc')
+            ->select('users.*', 'work_flow_histories.updated_at')
+            ->first();
+
+        $approver = null;
+        $roleMapping = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
+        $requiredRole = $roleMapping[$ictForm->hec_level_name] ?? null;
+        if ($requiredRole) {
+            $approver = \App\Models\User::join('work_flow_histories', 'work_flow_histories.who_approve', '=', 'users.id')
+                ->whereHas('roles', fn($q) => $q->where('name', $requiredRole))
+                ->where('work_flow_histories.work_flow_id', $workflowId)
+                ->where('work_flow_histories.status', 1)
+                ->orderBy('work_flow_histories.updated_at', 'desc')
+                ->select('users.*', 'work_flow_histories.updated_at')
+                ->first();
+        }
+
+        return view('pdf.ict_access_form', compact(
+            'ictForm', 'hmaccess', 'edocsLevels', 'requestUser',
+            'activeDrtPrivilege', 'emailPrivilege', 'vpnPrivilege',
+            'pbaxPrivilege', 'folderPrivilege', 'sapLevel', 'arutiPrivilege',
+            'lineManager', 'itOfficer', 'hrOfficer', 'approver', 'ceoApprover',
+            'isRequesterHecMember', 'isClinicalDepartment'
+        ));
     }
 
     public function removeHardwareItem(Request $request)
@@ -294,9 +711,17 @@ class FormController extends Controller
     public function approveForm(Request $request)
     {
         try {
+            Log::info('ICT Approval: Request received', [
+                'access_id' => $request->access_id,
+                'user_id' => Auth::id(),
+                'user_name' => Auth::user()?->username
+            ]);
+
             $request->validate([
                 'access_id' => 'required|exists:ict_access_resources,id'
             ]);
+
+            Log::info('ICT Approval: Validation passed');
 
             DB::beginTransaction();
 
@@ -311,17 +736,30 @@ class FormController extends Controller
                 ], 404);
             }
 
+            Log::info('ICT Approval: Workflow found', ['workflow_id' => $workflow->id]);
+
             // Find the current workflow history where status is 0 (pending)
-            $workflowHistory = WorkflowHistory::where('work_flow_id', $workflow->id)
+            $workflowHistory = WorkFlowHistory::where('work_flow_id', $workflow->id)
                 ->where('status', 0)
                 ->where('attended_by', Auth::id())
                 ->first();
 
+            Log::info('ICT Approval: WorkflowHistory query executed', [
+                'workflow_id' => $workflow->id,
+                'user_id' => Auth::id(),
+                'found' => $workflowHistory ? 'yes' : 'no'
+            ]);
+
             if (!$workflowHistory) {
                 DB::rollBack();
+                // Check what workflow histories exist for debugging
+                $allHistories = WorkFlowHistory::where('work_flow_id', $workflow->id)
+                    ->get(['id', 'attended_by', 'status', 'created_at'])
+                    ->toArray();
                 Log::error('ICT Approval: WorkflowHistory not found', [
                     'workflow_id' => $workflow->id,
-                    'user_id' => Auth::id()
+                    'user_id' => Auth::id(),
+                    'all_histories_for_workflow' => $allHistories
                 ]);
                 return response()->json([
                     'success' => false,
@@ -329,19 +767,58 @@ class FormController extends Controller
                 ], 404);
             }
 
+            Log::info('ICT Approval: WorkflowHistory found', ['history_id' => $workflowHistory->id]);
+
             $user = Auth::user();
-            $roles = $user->getRoleNames()->first();
+            $userRoles = $user->getRoleNames()->toArray();
+
+            Log::info('ICT Approval: User roles retrieved', [
+                'user_id' => $user->id,
+                'roles' => $userRoles
+            ]);
+
+            // Determine the appropriate role for approval workflow
+            // Priority: it > hr > ceo > hec members > line-manager
+            $approvalRolePriority = ['it', 'hr', 'ceo', 'coo', 'cfo', 'cms', 'ccdro', 'line-manager'];
+            $roles = null;
+            foreach ($approvalRolePriority as $priorityRole) {
+                if (in_array($priorityRole, $userRoles)) {
+                    $roles = $priorityRole;
+                    break;
+                }
+            }
+
+            // Fallback to first role if no priority role found
+            if (!$roles) {
+                $roles = $userRoles[0] ?? null;
+            }
+
+            Log::info('ICT Approval: Role determined', [
+                'user_id' => $user->id,
+                'all_roles' => $userRoles,
+                'selected_role' => $roles,
+            ]);
+
             $ictAccessResource = IctAccessResource::findOrFail($request->access_id);
             $requester = $ictAccessResource->user;
 
+            Log::info('ICT Approval: ICT Access Resource loaded', [
+                'access_id' => $ictAccessResource->id,
+                'current_status' => $ictAccessResource->status
+            ]);
+
             // Update the current WorkflowHistory to approved (status = 1)
             if ($roles != 'hr' && $roles != 'it') {
+                Log::info('ICT Approval: Updating workflow history to approved', ['history_id' => $workflowHistory->id]);
                 $workflowHistory->status = 1;
                 $workflowHistory->who_approve = $user->id;
                 $workflowHistory->comments = 'Approved';
                 if (!$workflowHistory->save()) {
                     throw new \Exception('Failed to update workflow history');
                 }
+                Log::info('ICT Approval: Workflow history updated successfully');
+            } else {
+                Log::info('ICT Approval: Skipping workflow history update (HR/IT role)', ['role' => $roles]);
             }
 
             // Get requester user for email
@@ -354,19 +831,133 @@ class FormController extends Controller
                 throw new \Exception('Requester user not found');
             }
 
+            // Build request details summary
+            $requestSummary = [];
+            
+            // Domain Access
+            if ($ictAccessResource->active_drt) {
+                $drtPrivilege = \App\Models\PrivilegeLevel::find($ictAccessResource->active_drt);
+                if ($drtPrivilege) {
+                    $requestSummary[] = "Domain Access: " . $drtPrivilege->prv_name;
+                }
+            }
+            
+            // Email Access
+            if ($ictAccessResource->email) {
+                $emailPrivilege = \App\Models\PrivilegeLevel::find($ictAccessResource->email);
+                if ($emailPrivilege) {
+                    $requestSummary[] = "Email Access: " . $emailPrivilege->prv_name;
+                }
+            }
+            if (!empty($ictAccessResource->requested_email_address)) {
+                $requestSummary[] = "Requested Email Address: " . $ictAccessResource->requested_email_address;
+            }
+            
+            // Network Folder Access
+            if ($ictAccessResource->network_folder) {
+                $folderPrivilege = \App\Models\PrivilegeLevel::find($ictAccessResource->folder_privilege);
+                $folderAccess = "Network Folder: " . $ictAccessResource->network_folder;
+                if ($folderPrivilege) {
+                    $folderAccess .= " (" . $folderPrivilege->prv_name . ")";
+                }
+                $requestSummary[] = $folderAccess;
+            }
+            
+            // Additional System Access
+            $additionalSystems = [];
+            
+            // HealthAI HMIS
+            if ($ictAccessResource->hmisId) {
+                $hmisIds = is_string($ictAccessResource->hmisId) ? json_decode($ictAccessResource->hmisId, true) : $ictAccessResource->hmisId;
+                if (is_array($hmisIds) && !empty($hmisIds)) {
+                    $hmisLevels = DB::table('h_m_i_s_access_levels')->whereIn('id', $hmisIds)->pluck('names')->toArray();
+                    if (!empty($hmisLevels)) {
+                        $additionalSystems[] = "HealthAI HMIS: " . implode(', ', $hmisLevels);
+                    }
+                }
+            }
+            
+            // Aruti HR MIS
+            if ($ictAccessResource->aruti && $ictAccessResource->aruti != '0') {
+                $arutiLevel = \App\Models\ArutiLevel::find($ictAccessResource->aruti);
+                if ($arutiLevel) {
+                    $additionalSystems[] = "Aruti HR MIS: " . $arutiLevel->aruti_name;
+                }
+            }
+            
+            // eDocs
+            if ($ictAccessResource->edocs) {
+                $edocsIds = is_string($ictAccessResource->edocs) ? json_decode($ictAccessResource->edocs, true) : $ictAccessResource->edocs;
+                if (is_array($edocsIds) && !empty($edocsIds)) {
+                    $edocsLevels = \App\Models\EdocsLevel::whereIn('id', $edocsIds)->pluck('edocs_name')->toArray();
+                    if (!empty($edocsLevels)) {
+                        $additionalSystems[] = "eDocs System: " . implode(', ', $edocsLevels);
+                    }
+                }
+            }
+            
+            // VPN
+            if ($ictAccessResource->VPN && $ictAccessResource->VPN != '0') {
+                $vpnPrivilege = \App\Models\PrivilegeLevel::find($ictAccessResource->VPN);
+                if ($vpnPrivilege) {
+                    $additionalSystems[] = "Network Access (VPN): " . $vpnPrivilege->prv_name;
+                }
+            }
+            
+            // SAP
+            if ($ictAccessResource->ASPId && $ictAccessResource->ASPId != '0') {
+                $sapLevel = \App\Models\SAPLevels::find($ictAccessResource->ASPId);
+                if ($sapLevel) {
+                    $additionalSystems[] = "SAP ERP Access: " . $sapLevel->access_name;
+                }
+            }
+            
+            // PABX
+            if ($ictAccessResource->pbax && $ictAccessResource->pbax != '0') {
+                $pbaxPrivilege = \App\Models\PrivilegeLevel::find($ictAccessResource->pbax);
+                if ($pbaxPrivilege) {
+                    $additionalSystems[] = "Call Manager-PABX: " . $pbaxPrivilege->prv_name;
+                }
+            }
+            
+            // Access Key Cards
+            if ($ictAccessResource->access_key_card_id) {
+                $keyCardIds = is_string($ictAccessResource->access_key_card_id) ? json_decode($ictAccessResource->access_key_card_id, true) : $ictAccessResource->access_key_card_id;
+                if (is_array($keyCardIds) && !empty($keyCardIds)) {
+                    $keyCards = \App\Models\AccessKeyCard::whereIn('id', $keyCardIds)->pluck('card_number')->toArray();
+                    if (!empty($keyCards)) {
+                        $additionalSystems[] = "Access Key Cards: " . implode(', ', $keyCards);
+                    }
+                }
+            }
+            
+            if (!empty($additionalSystems)) {
+                $requestSummary = array_merge($requestSummary, $additionalSystems);
+            }
+            
+            // Hardware Request
+            if ($ictAccessResource->hardware_request) {
+                $requestSummary[] = "Hardware: " . $ictAccessResource->hardware_request;
+            }
+
             $emailsToSend = [];
             $nextApproverRole = null;
 
+            Log::info('ICT Approval: Entering role switch', ['role' => $roles]);
+
             switch ($roles) {
                 case 'line-manager':
+                case 'ceo':
                 case 'coo':
                 case 'cfo':
                 case 'cms':
+                case 'ccdro':
+                    Log::info('ICT Approval: Case line-manager/HEC/CEO - forwarding to HR');
                     $nextApproverRole = 'hr';
                     break;
                 case 'hr':
                     // Mark all HR approvals as complete
-                    $workflowHistoryHR = WorkflowHistory::where('work_flow_id', $workflow->id)
+                    $workflowHistoryHR = WorkFlowHistory::where('work_flow_id', $workflow->id)
                         ->join('users', 'users.id', '=', 'work_flow_histories.attended_by')
                         ->where('work_flow_histories.status', 0)
                         ->whereHas('user.roles', function ($query) {
@@ -388,7 +979,7 @@ class FormController extends Controller
                     break;
                 case 'it':
                     // Mark all IT approvals as complete and finalize workflow
-                    $workflowHistoryIT = WorkflowHistory::where('work_flow_id', $workflow->id)
+                    $workflowHistoryIT = WorkFlowHistory::where('work_flow_id', $workflow->id)
                         ->join('users', 'users.id', '=', 'work_flow_histories.attended_by')
                         ->where('work_flow_histories.status', 0)
                         ->whereHas('user.roles', function ($query) {
@@ -468,10 +1059,14 @@ class FormController extends Controller
                     $ict->saveWorkflowHistory($input);
 
                     // Prepare email for queue
+                    $requesterFullName = trim(($requesterUser->fname ?? '') . ' ' . ($requesterUser->lname ?? '')) ?: $requesterUser->username;
                     $requestDetails = [
-                        'forwarded_by' => $requesterUser->fname ?? $requesterUser->username,
+                        'forwarded_by' => $requesterFullName,
                         'request' => "IT Access Form",
                         'requestDate' => Carbon::now()->format('d F Y'),
+                        'user_type' => $ictAccessResource->user_type ?? null,
+                        'access_required' => $ictAccessResource->access_required ?? null,
+                        'request_summary' => $requestSummary,
                     ];
                     $emailsToSend[] = [
                         'to' => $approver->email,
@@ -503,10 +1098,14 @@ class FormController extends Controller
                 $ict->saveWorkflowHistory($input);
 
                 // Prepare email for queue
+                $requesterFullName = trim(($requesterUser->fname ?? '') . ' ' . ($requesterUser->lname ?? '')) ?: $requesterUser->username;
                 $requestDetails = [
-                    'forwarded_by' => $requesterUser->fname ?? $requesterUser->username,
+                    'forwarded_by' => $requesterFullName,
                     'request' => "IT Access Form",
                     'requestDate' => Carbon::now()->format('d F Y'),
+                    'user_type' => $ictAccessResource->user_type ?? null,
+                    'access_required' => $ictAccessResource->access_required ?? null,
+                    'request_summary' => $requestSummary,
                 ];
                 $emailsToSend[] = [
                     'to' => $approver->email,
@@ -514,7 +1113,14 @@ class FormController extends Controller
                 ];
             }
 
+            Log::info('ICT Approval: About to commit transaction', [
+                'next_approver_role' => $nextApproverRole,
+                'email_count' => count($emailsToSend)
+            ]);
+
             DB::commit();
+
+            Log::info('ICT Approval: Transaction committed successfully');
 
             // Send emails via queue (after commit)
             foreach ($emailsToSend as $emailJob) {
@@ -726,9 +1332,10 @@ class FormController extends Controller
         $workflowCompleted = $workflow && $workflow->work_flow_completed == 1;
         $canHRViewCompleted = $isHR && $workflowCompleted;
         
-        // Previous approvers (Line Manager, Finance Officer, IT) can review their section after HR approval
+        // Previous approvers (Line Manager, Finance Officer, IT) can review after they have approved
+        // (even before full workflow completion, so they can track progress)
         $canReviewPreviousApproval = false;
-        if ($workflowCompleted && $userApprovalStep) {
+        if ($userApprovalStep && $workflow) {
             $userApprovedHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
                 ->where('attended_by', $user->id)
                 ->where('status', 1)
@@ -736,11 +1343,10 @@ class FormController extends Controller
                 ->first();
             if ($userApprovedHistory) {
                 $userRoles = $user->getRoleNames();
-                // Check if user has the role that matches their approval step
                 $roleMatches = false;
                 if ($userApprovalStep === 'Line Manager' && $userRoles->contains('line-manager')) {
                     $roleMatches = true;
-                } elseif ($userApprovalStep === 'Finance Officer' && $userRoles->contains('finance officer')) {
+                } elseif ($userApprovalStep === 'Finance Officer' && $user->hasFinanceOfficerRole()) {
                     $roleMatches = true;
                 } elseif ($userApprovalStep === 'IT Officer' && $userRoles->contains('it')) {
                     $roleMatches = true;
@@ -796,8 +1402,19 @@ class FormController extends Controller
         $clearance->username = $employeeUser->username;
         $clearance->ccbrt_code = $employeeUser->ccbrt_code;
         $clearance->dept_name = $employeeUser->department ? $employeeUser->department->dept_name : null;
+        $clearance->entity_name = $employeeUser->department && $employeeUser->department->divisions
+            ? $employeeUser->department->divisions->pluck('name')->filter()->implode(', ')
+            : null;
         $clearance->job_title = $employeeUser->jobTitle ? $employeeUser->jobTitle->job_title : null;
         $clearance->access_id = $clearanceForm->id;
+
+        $staffContract = Contract::where('user_id', $employeeUser->id)->latest('id')->first();
+        $clearance->date_of_hire = $employeeUser->starting_date
+            ?: ($staffContract?->start_date ?: $clearanceForm->date_of_hire);
+        $clearance->last_working_day = $employeeUser->ending_date
+            ?: ($staffContract?->end_date ?: $clearanceForm->last_working_day);
+        $clearance->end_of_contract = $employeeUser->ending_date
+            ?: ($staffContract?->end_date ?: $clearanceForm->end_of_contract);
         
         // Get workflow history for current user if exists
         $userWorkflowHistory = null;
@@ -813,34 +1430,26 @@ class FormController extends Controller
         $approver = null;
         $lineManager = null;
 
-        if (auth()->user()->hasRole(['coo', 'cfo', 'cms'])) {
+        if (auth()->user()->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             $roleMapping = [
                 'COO' => 'coo',
                 'CFO' => 'cfo',
                 'CMS' => 'cms',
+                'CCDRO' => 'ccdro',
             ];
             // Check if the role mapping is working
             $requiredRole = $roleMapping[$clearance->hec_level_name ?? ''] ?? null;
 
-            if (!$requiredRole) {
-                dd('No matching role found for approval');
-            }
-
-            // Fetch users with the required role
-            $testUsers = User::whereHas('roles', function ($query) use ($requiredRole) {
-                $query->where('name', $requiredRole);
-            })->get();
-
-            // Fetch the approver (only if workflow exists)
+            // Fetch the approver (only if workflow exists and role is mapped)
             $workFlowId = $workflow ? $workflow->id : null;
-            if ($workFlowId) {
-            $approver = User::whereHas('roles', function ($query) use ($requiredRole) {
-                $query->where('name', $requiredRole);
-            })
-                ->join('clearance_work_flow_histories', 'clearance_work_flow_histories.who_approve', '=', 'users.id')
-                ->where('clearance_work_flow_histories.work_flow_id', $workFlowId)
-                ->where('clearance_work_flow_histories.status', 1)
-                ->first();
+            if ($workFlowId && $requiredRole) {
+                $approver = User::whereHas('roles', function ($query) use ($requiredRole) {
+                    $query->where('name', $requiredRole);
+                })
+                    ->join('clearance_work_flow_histories', 'clearance_work_flow_histories.who_approve', '=', 'users.id')
+                    ->where('clearance_work_flow_histories.work_flow_id', $workFlowId)
+                    ->where('clearance_work_flow_histories.status', 1)
+                    ->first();
             }
 
             //dd($approver);
@@ -867,7 +1476,8 @@ class FormController extends Controller
 
         if ($workFlowId && $employeeUser->deptId) {
         $financeOfficer = User::whereHas('roles', function ($query) {
-            $query->where('name', 'finance officer');
+            $query->where('name', 'finance officer')
+                ->orWhere('name', 'like', 'finance-officer-%');
         })
                 ->where('users.deptId', $employeeUser->deptId)
             ->join('clearance_work_flow_histories', 'clearance_work_flow_histories.who_approve', '=', 'users.id')
@@ -949,12 +1559,16 @@ class FormController extends Controller
                     } elseif ($stepName === 'Finance Officer') {
                         $sectionDetails = [
                             'Repaid advance on Salary' => $clearance->repaid_salary_advance ?? 'N/A',
+                            'Salary advance amount' => isset($clearance->repaid_salary_advance_amount) && $clearance->repaid_salary_advance_amount !== null ? number_format((float) $clearance->repaid_salary_advance_amount, 2) : 'N/A',
+                            'Staff has bonding agreement' => $clearance->has_bonding_agreement ?? 'N/A',
+                            'Bonding agreement amount' => isset($clearance->bonding_agreement_amount) && $clearance->bonding_agreement_amount !== null ? number_format((float) $clearance->bonding_agreement_amount, 2) : 'N/A',
                             'Staff informed Finance of outstanding loan balances' => $clearance->loan_balances_informed ?? 'N/A',
                             'All salary advances cleared' => $clearance->all_salary_advances_cleared ? 'Yes' : 'No',
                             'Allowances reconciled' => $clearance->allowances_reconciled ? 'Yes' : 'No',
                             'Pending claims settled' => $clearance->pending_claims_settled ? 'Yes' : 'No',
                             'Outstanding loans recovered' => $clearance->outstanding_loans_recovered ? 'Yes' : 'No',
                             'Repaid outstanding imprest' => $clearance->repaid_outstanding_imprest ?? 'N/A',
+                            'Cleared/accounted for imprest or business advance' => $clearance->cleared_imprest_or_business_advance ?? 'N/A',
                             'Employee eligible for final payment' => isset($clearance->employee_eligible_for_final_payment) ? ($clearance->employee_eligible_for_final_payment ? 'Yes' : 'No') : 'N/A',
                             'Finance Comments' => $clearance->finance_comments ?? 'N/A',
                         ];
@@ -1021,17 +1635,38 @@ class FormController extends Controller
         $canEdit = false;
         $isFinalApproval = false;
         if ($workflow) {
+            // Try exact attended_by match first (Line Manager, Finance Officer, or previously assigned IT/HR)
             $currentHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
                 ->where('status', 0)
                 ->where('attended_by', $user->id)
                 ->first();
-            
+
+            // For Finance/IT/HR: fall back to role-based step detection (any user with that role can approve)
+            if (!$currentHistory) {
+                $userRoles = $user->getRoleNames();
+                if ($user->hasFinanceOfficerRole() && $workflow->work_flow_status === 'Pending Approval - Finance Officer') {
+                    $currentHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('status', 0)
+                        ->where('step_name', 'Finance Officer')
+                        ->first();
+                } elseif ($userRoles->contains('it') && $workflow->work_flow_status === 'Pending Approval - IT Officer') {
+                    $currentHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('status', 0)
+                        ->where('step_name', 'IT Officer')
+                        ->first();
+                } elseif ($userRoles->contains('hr') && $workflow->work_flow_status === 'Pending Approval - HR Officer') {
+                    $currentHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('status', 0)
+                        ->where('step_name', 'HR Officer')
+                        ->first();
+                }
+            }
+
             if ($currentHistory) {
                 $currentApprovalStep = $currentHistory->step_name ?? null;
-                // Check if this is final approval - if so, don't allow editing, just viewing
                 if ($currentApprovalStep === 'HR Officer' || $workflow->work_flow_status === 'Pending Approval - HR Officer') {
                     $isFinalApproval = true;
-                    $canEdit = false; // Final approval is read-only, just approve/reject
+                    $canEdit = false;
                 } else {
                     $canEdit = true;
                 }
@@ -1180,10 +1815,34 @@ class FormController extends Controller
             }
 
             // Find the corresponding workflow history
+            // Try exact attended_by match first, then fall back to role-based matching
+            $userRolesForApproval = Auth::user()->getRoleNames();
+
+            // First try attended_by (exact assignment)
             $workflowHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
                 ->where('status', 0)
                 ->where('attended_by', Auth::id())
                 ->first();
+
+            // Fall back to role-based step detection for Finance/IT/HR
+            if (!$workflowHistory) {
+                if (Auth::user()->hasFinanceOfficerRole() && $workflow->work_flow_status === 'Pending Approval - Finance Officer') {
+                    $workflowHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('status', 0)
+                        ->where('step_name', 'Finance Officer')
+                        ->first();
+                } elseif ($userRolesForApproval->contains('it') && $workflow->work_flow_status === 'Pending Approval - IT Officer') {
+                    $workflowHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('status', 0)
+                        ->where('step_name', 'IT Officer')
+                        ->first();
+                } elseif ($userRolesForApproval->contains('hr') && $workflow->work_flow_status === 'Pending Approval - HR Officer') {
+                    $workflowHistory = Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('status', 0)
+                        ->where('step_name', 'HR Officer')
+                        ->first();
+                }
+            }
 
             if (!$workflowHistory) {
                 DB::rollBack();
@@ -1201,6 +1860,7 @@ class FormController extends Controller
             // Mark current step as approved
                 $workflowHistory->status = 1;
                 $workflowHistory->who_approve = Auth::id();
+                $workflowHistory->attended_by = Auth::id(); // Record who actually approved
                 
                 // Get current step name
                 $currentStep = $workflowHistory->step_name;
@@ -1224,6 +1884,19 @@ class FormController extends Controller
                 if (!$workflowHistory->save()) {
                     DB::rollBack();
                     throw new \Exception('Failed to update workflow history status');
+                }
+
+                // For role-based steps (IT/HR), close all OTHER pending entries so no other user sees it
+                if (in_array($currentStep, ['IT Officer', 'HR Officer'])) {
+                    Clearance_work_flow_history::where('work_flow_id', $workflow->id)
+                        ->where('step_name', $currentStep)
+                        ->where('status', 0)
+                        ->where('id', '!=', $workflowHistory->id)
+                        ->update([
+                            'status'      => 1,
+                            'who_approve' => Auth::id(),
+                            'remark'      => 'Closed — approved by ' . Auth::user()->fname . ' ' . Auth::user()->lname,
+                        ]);
                 }
 
         $user = Auth::user();
@@ -1256,9 +1929,19 @@ class FormController extends Controller
                 } elseif ($value === 'No' || $value === 'no' || $value === '0' || $value === 0 || $value === false) {
                     return 0;
                 } elseif ($value === 'N/A' || $value === 'Not Applicable' || $value === 'n/a' || $value === null || $value === '') {
-                    return 0; // Return 0 (No) for N/A values since boolean columns are not nullable
+                    return 0;
                 }
-                return 0; // Default to 0 if value is unrecognized
+                return 0;
+            };
+
+            // Helper for tri-state string columns (Yes / No / N/A) — used by Finance fields
+            $convertToTriState = function($value) {
+                if ($value === 'Yes' || $value === 'yes' || $value === '1' || $value === 1 || $value === true) {
+                    return 'Yes';
+                } elseif ($value === 'N/A' || $value === 'Not Applicable' || $value === 'n/a') {
+                    return 'N/A';
+                }
+                return 'No';
             };
 
             if ($currentStep === 'Line Manager') {
@@ -1329,30 +2012,123 @@ class FormController extends Controller
                 if ($request->has('repaid_salary_advance')) {
                     $updateData['repaid_salary_advance'] = $request->repaid_salary_advance;
                 }
-                if ($request->has('loan_balances_informed')) {
-                    $updateData['loan_balances_informed'] = $request->loan_balances_informed;
+                if ($request->has('repaid_salary_advance_details')) {
+                    $updateData['repaid_salary_advance_details'] = $request->repaid_salary_advance_details;
                 }
-                // Boolean fields
+                if ($request->has('repaid_salary_advance_amount')) {
+                    $rawSalaryAdvanceAmount = $request->repaid_salary_advance_amount;
+                    $updateData['repaid_salary_advance_amount'] =
+                        ($request->repaid_salary_advance ?? null) === 'Yes' && $rawSalaryAdvanceAmount !== null && $rawSalaryAdvanceAmount !== ''
+                            ? (float) $rawSalaryAdvanceAmount
+                            : null;
+                }
+                if ($request->has('repaid_salary_advance_initial_amount')) {
+                    $v = $request->repaid_salary_advance_initial_amount;
+                    $updateData['repaid_salary_advance_initial_amount'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('repaid_salary_advance_balance')) {
+                    $v = $request->repaid_salary_advance_balance;
+                    $updateData['repaid_salary_advance_balance'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('has_bonding_agreement')) {
+                    $updateData['has_bonding_agreement'] = $request->has_bonding_agreement;
+                }
+                if ($request->has('has_bonding_agreement_details')) {
+                    $updateData['has_bonding_agreement_details'] = $request->has_bonding_agreement_details;
+                }
+                $bondingAgreementAnswer = $request->has_bonding_agreement ?? null;
+                if ($request->has('bonding_agreement_amount')) {
+                    $rawAmount = $request->bonding_agreement_amount;
+                    $updateData['bonding_agreement_amount'] = ($rawAmount !== null && $rawAmount !== '')
+                        ? (float) $rawAmount
+                        : null;
+                }
+                if ($request->has('bonding_agreement_initial_amount')) {
+                    $v = $request->bonding_agreement_initial_amount;
+                    $updateData['bonding_agreement_initial_amount'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('bonding_agreement_balance')) {
+                    $v = $request->bonding_agreement_balance;
+                    $updateData['bonding_agreement_balance'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('loan_amount_loaned')) {
+                    $v = $request->loan_amount_loaned;
+                    $updateData['loan_amount_loaned'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('loan_amount_paid')) {
+                    $v = $request->loan_amount_paid;
+                    $updateData['loan_amount_paid'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('loan_balance_remaining')) {
+                    $v = $request->loan_balance_remaining;
+                    $updateData['loan_balance_remaining'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('allowances_initial_amount')) {
+                    $v = $request->allowances_initial_amount;
+                    $updateData['allowances_initial_amount'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('allowances_balance')) {
+                    $v = $request->allowances_balance;
+                    $updateData['allowances_balance'] = ($v !== null && $v !== '') ? (float)$v : null;
+                }
+                if ($request->has('loan_balances_informed')) {
+                    $updateData['loan_balances_informed'] = $request->loan_balances_informed ?? 'N/A';
+                }
+                if ($request->has('loan_balances_informed_details')) {
+                    $updateData['loan_balances_informed_details'] = $request->loan_balances_informed_details;
+                }
+                // Tri-state string fields (Yes / No / N/A) — stored as varchar after migration
                 if ($request->has('all_salary_advances_cleared')) {
-                    $updateData['all_salary_advances_cleared'] = $convertToBoolean($request->all_salary_advances_cleared);
+                    $updateData['all_salary_advances_cleared'] = $convertToTriState($request->all_salary_advances_cleared);
+                }
+                if ($request->has('all_salary_advances_cleared_details')) {
+                    $updateData['all_salary_advances_cleared_details'] = $request->all_salary_advances_cleared_details;
                 }
                 if ($request->has('allowances_reconciled')) {
-                    $updateData['allowances_reconciled'] = $convertToBoolean($request->allowances_reconciled);
+                    $updateData['allowances_reconciled'] = $convertToTriState($request->allowances_reconciled);
+                }
+                if ($request->has('allowances_reconciled_details')) {
+                    $updateData['allowances_reconciled_details'] = $request->allowances_reconciled_details;
                 }
                 if ($request->has('pending_claims_settled')) {
-                    $updateData['pending_claims_settled'] = $convertToBoolean($request->pending_claims_settled);
+                    $updateData['pending_claims_settled'] = $convertToTriState($request->pending_claims_settled);
+                }
+                if ($request->has('pending_claims_settled_details')) {
+                    $updateData['pending_claims_settled_details'] = $request->pending_claims_settled_details;
                 }
                 if ($request->has('outstanding_loans_recovered')) {
-                    $updateData['outstanding_loans_recovered'] = $convertToBoolean($request->outstanding_loans_recovered);
+                    $updateData['outstanding_loans_recovered'] = $convertToTriState($request->outstanding_loans_recovered);
+                }
+                if ($request->has('outstanding_loans_recovered_details')) {
+                    $updateData['outstanding_loans_recovered_details'] = $request->outstanding_loans_recovered_details;
                 }
                 if ($request->has('repaid_outstanding_imprest')) {
-                    $updateData['repaid_outstanding_imprest'] = $request->repaid_outstanding_imprest;
+                    $updateData['repaid_outstanding_imprest'] = $request->repaid_outstanding_imprest ?? 'N/A';
+                }
+                if ($request->has('repaid_outstanding_imprest_details')) {
+                    $updateData['repaid_outstanding_imprest_details'] = $request->repaid_outstanding_imprest_details;
+                }
+                if ($request->has('cleared_imprest_or_business_advance')) {
+                    $updateData['cleared_imprest_or_business_advance'] = $request->cleared_imprest_or_business_advance ?? 'N/A';
+                }
+                if ($request->has('cleared_imprest_or_business_advance_details')) {
+                    $updateData['cleared_imprest_or_business_advance_details'] = $request->cleared_imprest_or_business_advance_details;
                 }
                 if ($request->has('employee_eligible_for_final_payment')) {
-                    $updateData['employee_eligible_for_final_payment'] = $convertToBoolean($request->employee_eligible_for_final_payment);
+                    $updateData['employee_eligible_for_final_payment'] = $convertToTriState($request->employee_eligible_for_final_payment);
+                }
+                if ($request->has('employee_eligible_for_final_payment_details')) {
+                    $updateData['employee_eligible_for_final_payment_details'] = $request->employee_eligible_for_final_payment_details;
                 }
                 if ($request->has('finance_comments')) {
                     $updateData['finance_comments'] = $request->finance_comments;
+                }
+                // Handle finance supporting document upload
+                if ($request->hasFile('finance_attachment')) {
+                    $file = $request->file('finance_attachment');
+                    $fileName = 'finance_clearance_' . time() . '_' . $clearanceForm->id . '.' . $file->getClientOriginalExtension();
+                    $filePath = $file->storeAs('clearance_documents', $fileName, 'public');
+                    $updateData['finance_attachment_path'] = $filePath;
                 }
             } elseif ($currentStep === 'HR Officer') {
                 // Boolean fields - only update if value is Yes or No (skip N/A to avoid null errors)
@@ -1434,6 +2210,12 @@ class FormController extends Controller
                 if ($request->has('hr_comments')) {
                     $updateData['hr_comments'] = $request->hr_comments;
                 }
+                // HR force-approve override: save reason and flip eligibility to Yes
+                if ($request->has('hr_force_approve_reason') && !empty($request->hr_force_approve_reason)) {
+                    $updateData['hr_force_approve_reason'] = $request->hr_force_approve_reason;
+                    // Override Finance Officer's "Not Eligible" decision
+                    $updateData['employee_eligible_for_final_payment'] = 'Yes';
+                }
                 // Handle exit interview document upload
                 if ($request->hasFile('exit_interview_document')) {
                     $file = $request->file('exit_interview_document');
@@ -1497,12 +2279,38 @@ class FormController extends Controller
             $nextStepName = '';
             $workflowStatus = '';
 
-        if ($roles->contains('line-manager')) {
+            // Use the actual workflow step that was just approved ($currentStep)
+            // instead of role-based detection — a user may hold multiple roles
+            // (e.g. finance officer AND line-manager), which would mis-route.
+        if ($currentStep === 'Line Manager') {
                 // Line Manager approved, next is Finance Officer
-                $nextApprover = User::role('finance officer')->first();
+                // Find the employee's entity via their department → division relationship
+                $employeeDept = $clearanceForm->user ? $clearanceForm->user->department : null;
+                $employeeEntityIds = $employeeDept ? $employeeDept->divisions()->pluck('divisions.id')->toArray() : [];
+
+                $nextApprover = null;
+
+                // Require finance officer assigned to the employee's entity (no global fallback).
+                if (!empty($employeeEntityIds)) {
+                    $nextApprover = User::whereHas('roles', function ($query) {
+                        $query->where('name', 'finance officer')
+                            ->orWhere('name', 'like', 'finance-officer-%');
+                    })
+                    ->where(function ($query) use ($employeeEntityIds) {
+                        $query->whereIn('assigned_entity_id', $employeeEntityIds)
+                            ->orWhereHas('assignedEntities', function ($subQuery) use ($employeeEntityIds) {
+                                $subQuery->whereIn('divisions.id', $employeeEntityIds);
+                            });
+                    })
+                    ->first();
+                }
+
                 if (!$nextApprover) {
                     DB::rollBack();
-                    $errorMsg = 'No Finance Officer found. Please contact the administrator to assign a Finance Officer.';
+                    $entityNames = !empty($employeeEntityIds)
+                        ? \App\Models\Division::whereIn('id', $employeeEntityIds)->pluck('name')->filter()->implode(', ')
+                        : 'N/A';
+                    $errorMsg = 'No Finance Officer is assigned to this employee entity (' . $entityNames . '). Please assign a Finance Officer to that entity in Users.';
                     if ($request->ajax() || $request->wantsJson()) {
                         return response()->json([
                             'success' => false,
@@ -1515,7 +2323,7 @@ class FormController extends Controller
                 }
                 $nextStepName = 'Finance Officer';
                 $workflowStatus = 'Pending Approval - Finance Officer';
-        } elseif ($roles->contains('finance officer')) {
+        } elseif ($currentStep === 'Finance Officer') {
                 // Finance Officer approved, next is IT - create workflow history for all IT users
                 $nextApprovers = User::role('it')->get();
                 if ($nextApprovers->isEmpty()) {
@@ -1533,7 +2341,7 @@ class FormController extends Controller
                 }
                 $nextStepName = 'IT Officer';
                 $workflowStatus = 'Pending Approval - IT Officer';
-        } elseif ($roles->contains('it')) {
+        } elseif ($currentStep === 'IT Officer') {
                 // IT approved, next is HR (Final) - create workflow history for all HR users
                 $nextApprovers = User::role('hr')->get();
                 if ($nextApprovers->isEmpty()) {
@@ -1551,7 +2359,7 @@ class FormController extends Controller
                 }
                 $nextStepName = 'HR Officer';
                 $workflowStatus = 'Pending Approval - HR Officer';
-            } elseif ($roles->contains('hr') && ($workflow->work_flow_status === 'Pending Approval - HR Officer' || $currentStep === 'HR Officer')) {
+            } elseif ($currentStep === 'HR Officer') {
                 // Final HR approval - complete the workflow and deactivate user
                 $isFinalApproval = true;
                 // Allow HR to update HR review fields and items collection during final approval
@@ -2004,5 +2812,171 @@ class FormController extends Controller
             ]);
         dd($ictForm);
         return view('employees_details.it_form', compact('ictForm', 'user'));
+    }
+
+    public function ictReport(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Check if user has permission to view approve summary
+        if (!$user->can('view locum reports') && ($user->can_view_approve_summary ?? 0) != 1) {
+            abort(403, 'You do not have permission to view this report.');
+        }
+        
+        // Get filter parameters
+        $statusFilter = $request->query('status', 'all'); // all, approved, pending, rejected
+        $dateFrom = $request->query('date_from');
+        $dateTo = $request->query('date_to');
+        $departmentFilter = $request->query('department');
+        
+        // Base query for all ICT Access Forms
+        $query = IctAccessResource::with(['user.department', 'workflow.histories' => function($q) {
+                $q->with(['attendedBy', 'forwardedBy'])->orderBy('id', 'desc');
+            }])
+            ->whereHas('workflow');
+        
+        // Apply status filter
+        if ($statusFilter === 'approved') {
+            $query->whereHas('workflow', function($q) {
+                $q->where('work_flow_completed', 1)->where('work_flow_status', 1);
+            });
+        } elseif ($statusFilter === 'pending') {
+            $query->whereHas('workflow', function($q) {
+                $q->where('work_flow_completed', 0);
+            });
+        } elseif ($statusFilter === 'rejected') {
+            $query->whereHas('workflow', function($q) {
+                $q->where(function($wq) {
+                    $wq->where('work_flow_completed', 1)->where('work_flow_status', 2)
+                       ->orWhereHas('histories', function($hq) {
+                           $hq->where('status', 2);
+                       });
+                });
+            });
+        }
+        
+        // Apply date filter
+        if ($dateFrom) {
+            $query->whereDate('created_at', '>=', $dateFrom);
+        }
+        if ($dateTo) {
+            $query->whereDate('created_at', '<=', $dateTo);
+        }
+        
+        // Apply department filter
+        if ($departmentFilter) {
+            $query->whereHas('user', function($q) use ($departmentFilter) {
+                $q->where('deptId', $departmentFilter);
+            });
+        }
+        
+        $ictForms = $query->orderBy('created_at', 'desc')->get();
+        
+        // Calculate statistics
+        $totalCount = IctAccessResource::whereHas('workflow')->count();
+        $approvedCount = IctAccessResource::whereHas('workflow', function($q) {
+            $q->where('work_flow_completed', 1)->where('work_flow_status', 1);
+        })->count();
+        $pendingCount = IctAccessResource::whereHas('workflow', function($q) {
+            $q->where('work_flow_completed', 0);
+        })->count();
+        $rejectedCount = IctAccessResource::whereHas('workflow', function($q) {
+            $q->where(function($wq) {
+                $wq->where('work_flow_completed', 1)->where('work_flow_status', 2)
+                   ->orWhereHas('histories', function($hq) {
+                       $hq->where('status', 2);
+                   });
+            });
+        })->count();
+        
+        // Get top approvers (staff who approve most)
+        $topApprovers = WorkFlowHistory::whereHas('workflow', function($q) {
+                $q->whereNotNull('ict_request_resource_id');
+            })
+            ->where('status', 1) // Approved
+            ->select('attended_by', DB::raw('count(*) as approval_count'))
+            ->groupBy('attended_by')
+            ->orderBy('approval_count', 'desc')
+            ->limit(10)
+            ->with('attendedBy')
+            ->get();
+        
+        // Get departments for filter
+        $departments = Departments::orderBy('dept_name')->get();
+        
+        // Calculate approval rate
+        $approvalRate = $totalCount > 0 ? round(($approvedCount / $totalCount) * 100, 2) : 0;
+        
+        return view('reports.ict', compact(
+            'ictForms', 
+            'totalCount', 
+            'approvedCount', 
+            'pendingCount', 
+            'rejectedCount',
+            'topApprovers',
+            'departments',
+            'approvalRate',
+            'statusFilter',
+            'dateFrom',
+            'dateTo',
+            'departmentFilter'
+        ));
+    }
+
+    public function hrReport(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Check if user has permission to view approve summary
+        if (!$user->can('view locum reports') && ($user->can_view_approve_summary ?? 0) != 1) {
+            abort(403, 'You do not have permission to view this report.');
+        }
+        
+        // Get all HR Forms with their workflow status
+        $hrForms = Workflow::whereNotNull('hr_form')
+            ->where('work_flow_completed', 1)
+            ->with(['user', 'histories'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        return view('reports.hr', compact('hrForms'));
+    }
+
+    public function bankReport(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Check if user has permission to view approve summary
+        if (!$user->can('view locum reports') && ($user->can_view_approve_summary ?? 0) != 1) {
+            abort(403, 'You do not have permission to view this report.');
+        }
+        
+        // Get all Bank Details Forms with their workflow status
+        $bankForms = Workflow::whereNotNull('bank_details_form_id')
+            ->where('work_flow_completed', 1)
+            ->with(['user', 'histories'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        return view('reports.bank', compact('bankForms'));
+    }
+
+    public function heslbReport(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Check if user has permission to view approve summary
+        if (!$user->can('view locum reports') && ($user->can_view_approve_summary ?? 0) != 1) {
+            abort(403, 'You do not have permission to view this report.');
+        }
+        
+        // Get all HESLB Forms with their workflow status
+        $heslbForms = Workflow::whereNotNull('heslb_form_id')
+            ->where('work_flow_completed', 1)
+            ->with(['user', 'histories'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        return view('reports.heslb', compact('heslbForms'));
     }
 }

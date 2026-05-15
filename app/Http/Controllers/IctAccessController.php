@@ -15,6 +15,7 @@ use App\Models\SAPLevels;
 use App\Models\User;
 use App\Models\Workflow;
 use App\Models\ArutiLevel;
+use App\Models\EdocsLevel;
 use App\Models\NetworkFolder;
 use App\Models\AccessKeyCard;
 use Carbon\Carbon;
@@ -108,9 +109,13 @@ class IctAccessController extends Controller
         $user = Auth::user()->load('department', 'employmentType');
         $qualifications = NhifQualification::where('delete_status', 0)->get();
         $privileges = PrivilegeLevel::where('delete_status', 0)->get();
-        $hmis = HMISAccessLevel::where('delete_status', 0)->get();
+        $hmis = HMISAccessLevel::where('delete_status', 0)->orderBy('names', 'asc')->get();
+        $arutiLevels = ArutiLevel::where('delete_status', 0)->where('aruti_status', 'active')->orderBy('aruti_name', 'asc')->get();
+        $edocsLevels = \App\Models\EdocsLevel::where('delete_status', 0)->where('edocs_status', 'active')->orderBy('edocs_name', 'asc')->get();
+        $networkFolders = NetworkFolder::where('delete_status', 0)->where('folder_status', 'active')->orderBy('folder_name', 'asc')->get();
+        $accessKeyCards = AccessKeyCard::where('delete_status', 0)->where('status', 'active')->orderBy('card_number', 'asc')->get();
 
-        return view('ict-access-form.index', compact('qualifications', 'privileges', 'hmis', 'user', 'acc'));
+        return view('ict-access-form.index', compact('qualifications', 'privileges', 'hmis', 'user', 'acc', 'arutiLevels', 'edocsLevels', 'networkFolders', 'accessKeyCards'));
     }
 
     public function store(Request $request)
@@ -135,16 +140,20 @@ class IctAccessController extends Controller
         // Email Access - required if enabled
         if ($request->has('enable_email') && $request->input('enable_email') == '1') {
             $rules['email'] = 'required|exists:privilege_levels,id';
+            $rules['requested_email_address'] = 'nullable|email|max:255';
         } else {
             $rules['email'] = 'nullable|exists:privilege_levels,id';
+            $rules['requested_email_address'] = 'nullable|email|max:255';
         }
 
         // Network Folder - required if enabled
         if ($request->has('enable_network_folder') && $request->input('enable_network_folder') == '1') {
             $rules['network_folder'] = 'required|string';
+            $rules['other_network_folder'] = 'nullable|string|max:255';
             $rules['folder_privilege'] = 'required|exists:privilege_levels,id';
         } else {
             $rules['network_folder'] = 'nullable|string';
+            $rules['other_network_folder'] = 'nullable|string|max:255';
             $rules['folder_privilege'] = 'nullable|exists:privilege_levels,id';
         }
 
@@ -205,6 +214,13 @@ class IctAccessController extends Controller
             return back()->withInput()->withErrors($validator);
         }
 
+        // If user selected "Other" folder, require the specific folder value
+        if ($request->input('enable_network_folder') == '1' && $request->input('network_folder') === 'Other') {
+            $request->validate([
+                'other_network_folder' => 'required|string|max:255',
+            ]);
+        }
+
         try {
             \DB::beginTransaction();
 
@@ -248,6 +264,14 @@ class IctAccessController extends Controller
                 ? implode(',', $request->input('hardware_request'))
                 : null;
 
+            $networkFolderValue = null;
+            if ($request->has('enable_network_folder') && $request->input('enable_network_folder') == '1') {
+                $networkFolderValue = $request->input('network_folder');
+                if ($networkFolderValue === 'Other') {
+                    $networkFolderValue = $request->input('other_network_folder');
+                }
+            }
+
             // Get default privilege level (User) for backward compatibility
             $defaultPrivilege = PrivilegeLevel::where('prv_name', 'User')->first();
             $privilegeId = $defaultPrivilege ? $defaultPrivilege->id : null;
@@ -255,6 +279,9 @@ class IctAccessController extends Controller
             $ict = IctAccessResource::create([
                 'privilegeId'       => $privilegeId, // Set to default User for backward compatibility
                 'email'             => ($request->has('enable_email') && $request->input('enable_email') == '1') ? $request->input('email') : null,
+                'requested_email_address' => ($request->has('enable_email') && $request->input('enable_email') == '1')
+                    ? $request->input('requested_email_address')
+                    : null,
                 'userId'            => $request->input('userId'),
                 'hmisId'            => ($request->has('enable_hmis') && $request->input('enable_hmis') == '1' && $request->has('hmisId') && !empty($request->input('hmisId'))) ? (is_array($request->input('hmisId')) ? $request->input('hmisId') : []) : null,
                 'aruti'             => ($request->has('enable_aruti') && $request->input('enable_aruti') == '1') ? $request->input('aruti') : null,
@@ -262,7 +289,7 @@ class IctAccessController extends Controller
                 'ASPId'             => ($request->has('enable_sap') && $request->input('enable_sap') == '1') ? $request->input('ASPId') : null,
                 'nhifId'            => null, // Removed from form, set to null for backward compatibility
                 'hardware_request'  => ($request->has('enable_hardware') && $request->input('enable_hardware') == '1') ? $hardwareRequest : null,
-                'network_folder'    => ($request->has('enable_network_folder') && $request->input('enable_network_folder') == '1') ? $request->input('network_folder') : null,
+                'network_folder'    => $networkFolderValue,
                 'folder_privilege'  => ($request->has('enable_network_folder') && $request->input('enable_network_folder') == '1') ? $request->input('folder_privilege') : null,
                 'active_drt'        => ($request->has('enable_domain') && $request->input('enable_domain') == '1') ? $request->input('active_drt') : null,
                 'user_type'         => $request->input('user_type'),
@@ -295,32 +322,188 @@ class IctAccessController extends Controller
                 'parent_id'     => null,
             ]);
 
-            $approver = Cache::remember("approver_user_" . Auth::id(), 300, function () {
+            $approverResult = Cache::remember("approver_user_" . Auth::id(), 300, function () {
                 return $this->findLineManagerForRequesterDepartment();
             });
 
-            if (!$approver) {
+            if (!$approverResult) {
                 throw new \Exception('Approver not found');
             }
 
-            $this->forwardWorkflowHistory([
-                'work_flow_id'  => $workflow->id,
-                'forwarded_by'  => Auth::id(),
-                'attended_by'   => $approver->id,
-                'status'        => '0',
-                'remark'        => 'Forwarded for approval',
-                'attend_date'   => now()->format('d F Y'),
-                'parent_id'     => $workflow->id,
-            ]);
+            // Check if CEO request - goes directly to HR
+            $isCeoRequest = ($approverResult === 'hr_direct');
+            $approversForEmail = [];
+            
+            if ($isCeoRequest) {
+                // CEO request - send to all HR users
+                $hrUsers = User::role('hr')->get();
+                if ($hrUsers->isEmpty()) {
+                    throw new \Exception('No HR users found for CEO request approval');
+                }
+                
+                foreach ($hrUsers as $hrUser) {
+                    $this->forwardWorkflowHistory([
+                        'work_flow_id'  => $workflow->id,
+                        'forwarded_by'  => Auth::id(),
+                        'attended_by'   => $hrUser->id,
+                        'status'        => '0',
+                        'remark'        => 'CEO Request - Forwarded directly to HR for approval',
+                        'attend_date'   => now()->format('d F Y'),
+                        'parent_id'     => $workflow->id,
+                    ]);
+                    $approversForEmail[] = $hrUser;
+                }
+            } else {
+                // Normal flow - single approver
+                $this->forwardWorkflowHistory([
+                    'work_flow_id'  => $workflow->id,
+                    'forwarded_by'  => Auth::id(),
+                    'attended_by'   => $approverResult->id,
+                    'status'        => '0',
+                    'remark'        => 'Forwarded for approval',
+                    'attend_date'   => now()->format('d F Y'),
+                    'parent_id'     => $workflow->id,
+                ]);
+                $approversForEmail[] = $approverResult;
+            }
 
             \DB::commit();
 
-            // Send email (queued)
-            Mail::to($approver->email)->queue(new ApprovalRequestNotification($approver, [
-                'forwarded_by' => Auth::user()->fname,
-                'request'      => "IT Access Form",
-                'requestDate'  => now()->format('d F Y'),
-            ]));
+            // Build request details summary
+            $requestSummary = [];
+            
+            // Domain Access
+            if ($ict->active_drt) {
+                $drtPrivilege = PrivilegeLevel::find($ict->active_drt);
+                if ($drtPrivilege) {
+                    $requestSummary[] = "Domain Access: " . $drtPrivilege->prv_name;
+                }
+            }
+            
+            // Email Access
+            if ($ict->email) {
+                $emailPrivilege = PrivilegeLevel::find($ict->email);
+                if ($emailPrivilege) {
+                    $requestSummary[] = "Email Access: " . $emailPrivilege->prv_name;
+                }
+            }
+            if (!empty($ict->requested_email_address)) {
+                $requestSummary[] = "Requested Email Address: " . $ict->requested_email_address;
+            }
+            
+            // Network Folder Access
+            if ($ict->network_folder) {
+                $folderPrivilege = PrivilegeLevel::find($ict->folder_privilege);
+                $folderAccess = "Network Folder: " . $ict->network_folder;
+                if ($folderPrivilege) {
+                    $folderAccess .= " (" . $folderPrivilege->prv_name . ")";
+                }
+                $requestSummary[] = $folderAccess;
+            }
+            
+            // Additional System Access
+            $additionalSystems = [];
+            
+            // HealthAI HMIS
+            if ($ict->hmisId) {
+                $hmisIds = is_string($ict->hmisId) ? json_decode($ict->hmisId, true) : $ict->hmisId;
+                if (is_array($hmisIds) && !empty($hmisIds)) {
+                    $hmisLevels = \DB::table('h_m_i_s_access_levels')->whereIn('id', $hmisIds)->pluck('names')->toArray();
+                    if (!empty($hmisLevels)) {
+                        $additionalSystems[] = "HealthAI HMIS: " . implode(', ', $hmisLevels);
+                    }
+                }
+            }
+            
+            // Aruti HR MIS
+            if ($ict->aruti && $ict->aruti != '0') {
+                $arutiLevel = \App\Models\ArutiLevel::find($ict->aruti);
+                if ($arutiLevel) {
+                    $additionalSystems[] = "Aruti HR MIS: " . $arutiLevel->aruti_name;
+                }
+            }
+            
+            // eDocs
+            if ($ict->edocs) {
+                $edocsIds = is_string($ict->edocs) ? json_decode($ict->edocs, true) : $ict->edocs;
+                if (is_array($edocsIds) && !empty($edocsIds)) {
+                    $edocsLevels = \App\Models\EdocsLevel::whereIn('id', $edocsIds)->pluck('edocs_name')->toArray();
+                    if (!empty($edocsLevels)) {
+                        $additionalSystems[] = "eDocs System: " . implode(', ', $edocsLevels);
+                    }
+                }
+            }
+            
+            // VPN
+            if ($ict->VPN && $ict->VPN != '0') {
+                $vpnPrivilege = PrivilegeLevel::find($ict->VPN);
+                if ($vpnPrivilege) {
+                    $additionalSystems[] = "Network Access (VPN): " . $vpnPrivilege->prv_name;
+                }
+            }
+            
+            // SAP
+            if ($ict->ASPId && $ict->ASPId != '0') {
+                $sapLevel = \App\Models\SAPLevels::find($ict->ASPId);
+                if ($sapLevel) {
+                    $additionalSystems[] = "SAP ERP Access: " . $sapLevel->access_name;
+                }
+            }
+            
+            // PABX
+            if ($ict->pbax && $ict->pbax != '0') {
+                $pbaxPrivilege = PrivilegeLevel::find($ict->pbax);
+                if ($pbaxPrivilege) {
+                    $additionalSystems[] = "Call Manager-PABX: " . $pbaxPrivilege->prv_name;
+                }
+            }
+            
+            // Access Key Cards
+            if ($ict->access_key_card_id) {
+                $keyCardIds = is_string($ict->access_key_card_id) ? json_decode($ict->access_key_card_id, true) : $ict->access_key_card_id;
+                if (is_array($keyCardIds) && !empty($keyCardIds)) {
+                    $keyCards = \App\Models\AccessKeyCard::whereIn('id', $keyCardIds)->pluck('card_number')->toArray();
+                    if (!empty($keyCards)) {
+                        $additionalSystems[] = "Access Key Cards: " . implode(', ', $keyCards);
+                    }
+                }
+            }
+            
+            if (!empty($additionalSystems)) {
+                $requestSummary = array_merge($requestSummary, $additionalSystems);
+            }
+            
+            // Hardware Request
+            if ($ict->hardware_request) {
+                $requestSummary[] = "Hardware: " . $ict->hardware_request;
+            }
+
+            // Send email (queued) to all approvers (do not fail request if mail fails)
+            $requester = Auth::user();
+            $requesterFullName = trim(($requester->fname ?? '') . ' ' . ($requester->lname ?? '')) ?: $requester->username;
+            
+            foreach ($approversForEmail as $approver) {
+                try {
+                    if (!empty($approver?->email)) {
+                        Mail::to($approver->email)->queue(new ApprovalRequestNotification($approver, [
+                            'forwarded_by' => $requesterFullName,
+                            'request'      => "IT Access Form",
+                            'requestDate'  => now()->format('d F Y'),
+                            'user_type' => $ict->user_type ?? null,
+                            'access_required' => $ict->access_required ?? null,
+                            'request_summary' => $requestSummary,
+                        ]));
+                    }
+                } catch (\Throwable $mailEx) {
+                    \Log::error('ICT Access: Failed to dispatch approval email', [
+                        'ict_access_resource_id' => $ict->id,
+                        'approver_user_id' => $approver?->id,
+                        'to' => $approver?->email,
+                        'error' => $mailEx->getMessage(),
+                    ]);
+                    // Don't fail the request if email fails
+                }
+            }
 
             Alert::success('Successfully', 'IT access request added');
             return redirect()->route('request.index')->with('success', 'IT access form request submitted successfully');
@@ -356,6 +539,21 @@ class IctAccessController extends Controller
     {
 
         try {
+            // Check if the requester is the CEO - CEO requests go directly to HR
+            if (Auth::user()->hasRole('ceo')) {
+                // Return 'hr' as a special indicator that form should go to HR users
+                return 'hr_direct';
+            }
+            
+            $hecRoles = ['coo', 'cfo', 'cms', 'ccdro'];
+            if (Auth::user()->hasAnyRole($hecRoles)) {
+                $ceo = User::role('ceo')->first();
+                if (!$ceo) {
+                    throw new \Exception('CEO approver not found for HEC member request.');
+                }
+                return $ceo;
+            }
+
             // Get the role name of the requester (Line Manager)
             $requesterRole = Auth::user()->getRoleNames()->first();
             // dd( $requesterRole);
@@ -367,7 +565,7 @@ class IctAccessController extends Controller
                 // dd($lineManagerDepartment);
                 $hec_id = $lineManagerDepartment->hec_id;
                 // dd($hec_id);
-                // tafuta hec level name sahihi (COO, CFO, CMS, CRHDO)
+                // tafuta hec level name sahihi (COO, CFO, CMS, CCDRO)
                 $hec = $lineManagerDepartment->hec;
                 //    dd($hec);
                 if ($hec) {
@@ -385,8 +583,8 @@ class IctAccessController extends Controller
                         case 'CMS':
                             $approverRoleName = 'cms';
                             break;
-                        case 'CRHDO':
-                            $approverRoleName = 'crhdo';
+                        case 'CCDRO':
+                            $approverRoleName = 'ccdro';
                             break;
                         default:
                             throw new \Exception('No valid hec_level_name found for this department.');
@@ -515,6 +713,7 @@ class IctAccessController extends Controller
                 $ict->update([
                     'privilegeId' => $request->input('privilegeId'),
                     'email' => $request->input('email'),
+                    'requested_email_address' => $request->input('requested_email_address'),
                     'userId' => $request->input('userId'),
                     'hmisId' => $request->input('hmisId'),
                     'aruti' => $request->input('aruti'),
@@ -567,11 +766,25 @@ class IctAccessController extends Controller
                 //     'parent_id' => $rejectedHistory->id,
                 // ]);
 
-                Mail::to($approver->email)->queue(new ApprovalRequestNotification($approver, [
-                'forwarded_by' => Auth::user()->fname,
-                'request'      => "IT Access Form",
-                'requestDate'  => now()->format('d F Y'),
-            ]));
+                $requester = Auth::user();
+                $requesterFullName = trim(($requester->fname ?? '') . ' ' . ($requester->lname ?? '')) ?: $requester->username;
+                try {
+                    if (!empty($approver?->email)) {
+                        Mail::to($approver->email)->queue(new ApprovalRequestNotification($approver, [
+                            'forwarded_by' => $requesterFullName,
+                            'request'      => "IT Access Form",
+                            'requestDate'  => now()->format('d F Y'),
+                        ]));
+                    }
+                } catch (\Throwable $mailEx) {
+                    \Log::error('ICT Access: Failed to dispatch resubmission email', [
+                        'ict_access_resource_id' => $ict->id,
+                        'approver_user_id' => $approver?->id,
+                        'to' => $approver?->email,
+                        'error' => $mailEx->getMessage(),
+                    ]);
+                    // Don't fail the resubmission if email fails
+                }
             });
 
 

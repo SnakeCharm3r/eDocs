@@ -194,10 +194,19 @@
                     @csrf
                     @method('PUT')
 
-                    <!-- Preamble -->
+                    <!-- Preamble (show this agreement's contract dates; on resubmit backend will set new period) -->
                     <div class="pdf-section">
                         <h5>Preamble</h5>
-                        <p>This document, dated <strong>{{ now()->format('d F Y') }}</strong>, serves as a special agreement
+                        @php
+                            $editStart = $agreement->start_date
+                                ? \Carbon\Carbon::parse($agreement->start_date)
+                                : \Carbon\Carbon::parse($agreement->created_at);
+                            $editEnd = $agreement->end_date
+                                ? \Carbon\Carbon::parse($agreement->end_date)
+                                : \Carbon\Carbon::parse($agreement->created_at)->addYear();
+                        @endphp
+                        <p>This document, dated <strong>{{ $editStart->format('j F Y') }}</strong>, serves as a special
+                            agreement
                             in
                             addition to the existing 'Contract of Employment' between <strong>CCBRT (Comprehensive Community
                                 Based Rehabilitation in Tanzania)</strong>, P.O. Box 23310, Dar es Salaam, and
@@ -205,7 +214,12 @@
                             </strong> residing in Dar es Salaam, hereinafter
                             called the EMPLOYEE.
                         </p>
-                        <p>The EMPLOYEE voluntarily agrees to enter into this agreement for LOCUM work.</p>
+                        <p>
+                            The EMPLOYEE voluntarily agrees to enter into this agreement for LOCUM work from
+                            <strong>{{ $editStart->format('j F Y') }}</strong>
+                            and this agreement will be valid until
+                            <strong>{{ $editEnd->format('j F Y') }}</strong>.
+                        </p>
                     </div>
 
                     <!-- Output Criteria -->
@@ -273,21 +287,12 @@
                                     <select class="form-control {{ $errors->has('education_level') ? 'is-invalid' : '' }}"
                                         id="education_level" name="education_level" required>
                                         <option value="" disabled>Select Education Level</option>
-                                        <option value="Certificate"
-                                            {{ old('education_level', $agreement->education_level) == 'Certificate' ? 'selected' : '' }}>
-                                            Certificate</option>
-                                        <option value="Enrolled_Certificate"
-                                            {{ old('education_level', $agreement->education_level) == 'Enrolled_Certificate' ? 'selected' : '' }}>
-                                            Enrolled_Certificate</option>
-                                        <option value="Diploma"
-                                            {{ old('education_level', $agreement->education_level) == 'Diploma' ? 'selected' : '' }}>
-                                            Diploma</option>
-                                        <option value="Degree"
-                                            {{ old('education_level', $agreement->education_level) == 'Degree' ? 'selected' : '' }}>
-                                            Degree</option>
-                                        <option value="Masters"
-                                            {{ old('education_level', $agreement->education_level) == 'Masters' ? 'selected' : '' }}>
-                                            Masters</option>
+                                        @foreach ($locumRates as $rate)
+                                            <option value="{{ $rate->education_level }}"
+                                                {{ old('education_level', $agreement->education_level) == $rate->education_level ? 'selected' : '' }}
+                                                data-rate="{{ $rate->rate }}">
+                                                {{ $rate->education_level }}</option>
+                                        @endforeach
                                     </select>
                                     @error('education_level')
                                         <div class="invalid-feedback">{{ $message }}</div>
@@ -325,36 +330,16 @@
 
     <script>
         document.getElementById('education_level').addEventListener('change', function() {
-            const educationLevel = this.value;
+            const selectedOption = this.options[this.selectedIndex];
+            const rate = selectedOption.getAttribute('data-rate') || 0;
             const locumRateInput = document.getElementById('locum_rate');
-            let rate = 0;
-
-            switch (educationLevel) {
-                case 'Certificate':
-                    rate = 50000;
-                    break;
-                case 'Enrolled_Certificate':
-                    rate = 60000;
-                    break;
-                case 'Diploma':
-                    rate = 80000;
-                    break;
-                case 'Degree':
-                    rate = 100000;
-                    break;
-                case 'Masters':
-                    rate = 120000;
-                    break;
-                default:
-                    rate = 0;
-            }
-
             locumRateInput.value = rate;
         });
 
-        // Trigger change event on page load
-        if (document.getElementById('education_level').value) {
-            document.getElementById('education_level').dispatchEvent(new Event('change'));
+        // Trigger change event on page load if a value is selected
+        const educationLevelSelect = document.getElementById('education_level');
+        if (educationLevelSelect.value) {
+            educationLevelSelect.dispatchEvent(new Event('change'));
         }
     </script>
 @endsection

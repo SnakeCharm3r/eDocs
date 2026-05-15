@@ -26,14 +26,36 @@
                                 <a href="{{ route('oncall_requests.view') }}" class="btn btn-outline-primary btn-sm">
                                     <i class="fas fa-tasks me-1"></i> Review Requests
                                 </a>
-                                @can('view oncall reports')
+                                @canany(['view oncall reports', 'view oncall requests'])
                                     <a href="{{ route('oncall_requests.report') }}" class="btn btn-outline-secondary btn-sm">
                                         <i class="fas fa-chart-bar me-1"></i> Reports
                                     </a>
-                                @endcan
+                                @endcanany
                             </div>
-                            <h4 class="page-title mb-0 fs-6">Pending On-Call Requests</h4>
+                            <h4 class="page-title mb-0 fs-6">
+                                @if(isset($filter) && $filter === 'approved')
+                                    Approved On-Call Requests
+                                @else
+                                    Pending On-Call Requests
+                                @endif
+                            </h4>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            {{-- Filter Buttons --}}
+            <div class="row mb-3">
+                <div class="col-sm-12">
+                    <div class="btn-group" role="group" aria-label="Filter Requests">
+                        <a href="{{ route('oncall_requests.view', ['filter' => 'pending']) }}" 
+                           class="btn {{ (!isset($filter) || $filter === 'pending') ? 'btn-primary' : 'btn-outline-primary' }}">
+                            <i class="fas fa-clock me-1"></i> Pending
+                        </a>
+                        <a href="{{ route('oncall_requests.view', ['filter' => 'approved']) }}" 
+                           class="btn {{ (isset($filter) && $filter === 'approved') ? 'btn-primary' : 'btn-outline-primary' }}">
+                            <i class="fas fa-check-circle me-1"></i> Approved
+                        </a>
                     </div>
                 </div>
             </div>
@@ -42,7 +64,7 @@
                 <div class="card-body">
                     <div class="table-responsive">
                         {{-- TABLE (self-contained; includes per-row modals + bulk reject modal) --}}
-                        @include('oncall_requests.view_partials._table', ['requests' => $requests])
+                        @include('oncall_requests.view_partials._table', ['requests' => $requests, 'filter' => $filter ?? 'pending'])
                     </div>
                 </div>
             </div>

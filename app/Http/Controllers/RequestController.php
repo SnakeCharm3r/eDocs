@@ -59,13 +59,18 @@ class RequestController extends Controller
 
             $userId = Auth::user()->id;
 
-            // Fetch only NON-requisition, NON-locum, NON-oncall Workflow Forms
-            // Locum and on-call requests have their own separate review areas
+            // Fetch only general request forms (ICT, HR, Bank, HESLB, NHIF, ID, Change Request)
             $form = Workflow::where('user_id', $userId)
-                ->whereNull('requisition_id') // Exclude requisitions
-                ->whereNull('locum_request_id') // Exclude locum requests
-                ->whereNull('on_call_request_id') // Exclude on-call requests
-                ->orderBy('created_at', 'desc') // Most recent first
+                ->where(function ($q) {
+                    $q->whereNotNull('ict_request_resource_id')
+                      ->orWhereNotNull('hr_form')
+                      ->orWhereNotNull('bank_form')
+                      ->orWhereNotNull('heslb_form')
+                      ->orWhereNotNull('nhif_form')
+                      ->orWhereNotNull('id_form')
+                      ->orWhereNotNull('change_request_id');
+                })
+                ->orderBy('created_at', 'desc')
                 ->get();
 
             $histories = [];

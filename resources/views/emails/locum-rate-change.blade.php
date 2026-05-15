@@ -38,9 +38,9 @@
             margin: 15px 0;
         }
         .rate-change {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            display: table;
+            width: 100%;
+            table-layout: fixed;
             padding: 10px;
             background-color: #fff;
             border: 1px solid #ddd;

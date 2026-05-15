@@ -365,8 +365,8 @@ class VendorsController extends Controller
     {
         $user = Auth::user();
 
-        // Check if user is a HEC member (COO, CFO, CMS, CRHDO)
-        $hecRoles = ['coo', 'cfo', 'cms', 'crhdo'];
+        // Check if user is a HEC member (COO, CFO, CMS, CCDRO)
+        $hecRoles = ['coo', 'cfo', 'cms', 'ccdro'];
         $isHecMember = false;
         $userHecRole = null;
         foreach ($hecRoles as $role) {
@@ -396,27 +396,14 @@ class VendorsController extends Controller
             // Get all departments for COO
             $allDepartments = \App\Models\Departments::all();
             
-            // If department filter is applied, use it; otherwise get all vendor IDs
-            if ($filterDepartment) {
-                $departmentIds = [(int)$filterDepartment];
-                $vendorIds = CcbrtContract::whereIn('department_id', $departmentIds)
-                    ->whereNotNull('vendor_id')
-                    ->distinct()
-                    ->pluck('vendor_id')
-                    ->toArray();
-            } else {
-                // Get all vendor IDs from all contracts (no department filter)
-                $vendorIds = CcbrtContract::whereNotNull('vendor_id')
-                    ->distinct()
-                    ->pluck('vendor_id')
-                    ->toArray();
-            }
+            // For COO, show ALL vendors (not just those with contracts)
+            $vendorIds = CcbrtVendor::pluck('id')->toArray();
         } else {
             // Map HEC role to HEC level name (same logic as ContractsController)
             $roleToHec = [];
             if ($user->hasRole('cfo')) $roleToHec[] = 'CFO';
             if ($user->hasRole('cms')) $roleToHec[] = 'CMS';
-            if ($user->hasRole('crhdo')) $roleToHec[] = 'CRHDO';
+            if ($user->hasRole('ccdro')) $roleToHec[] = 'CCDRO';
 
             // Get all department IDs mapped to this HEC member's HEC level
             // This matches the logic used in ContractsController::allowedDepartmentIds()
@@ -438,45 +425,21 @@ class VendorsController extends Controller
                 $departmentIds = $baseDepartmentIds;
             }
 
-            // Get all vendor IDs that have contracts in these departments
-            $vendorIds = CcbrtContract::whereIn('department_id', $departmentIds)
-                ->whereNotNull('vendor_id')
-                ->distinct()
-                ->pluck('vendor_id')
-                ->toArray();
+            // For other HEC members, show ALL vendors (not just those with contracts in their departments)
+            $vendorIds = CcbrtVendor::pluck('id')->toArray();
             
             $allDepartments = \App\Models\Departments::whereIn('id', $baseDepartmentIds)->get();
         }
 
-        // Get unique vendor types and industries for filter dropdowns (before filtering)
-        $vendorTypes = collect([]);
-        $industries = collect([]);
-        if (!empty($vendorIds)) {
-            $vendorTypes = CcbrtVendor::whereIn('id', $vendorIds)->distinct()->pluck('type')->filter()->sort()->values();
-            $industries = CcbrtVendor::whereIn('id', $vendorIds)->distinct()->pluck('industry')->filter()->sort()->values();
-        }
+        // Get unique vendor types and industries for filter dropdowns (from all vendors)
+        $vendorTypes = CcbrtVendor::distinct()->pluck('type')->filter()->sort()->values();
+        $industries = CcbrtVendor::distinct()->pluck('industry')->filter()->sort()->values();
 
         // Use allDepartments for the view (for COO it's all departments, for others it's their assigned departments)
         $departments = $allDepartments;
 
-        if (empty($vendorIds)) {
-            return view('procurements.vendors.hec-department-vendors', [
-                'vendors' => collect([]),
-                'departments' => $departments,
-                'allDepartments' => $allDepartments,
-                'user' => $user,
-                'filterDepartment' => $filterDepartment,
-                'filterVendorType' => $filterVendorType,
-                'filterVendorName' => $filterVendorName,
-                'filterIndustry' => $filterIndustry,
-                'filterStatus' => $filterStatus,
-                'vendorTypes' => $vendorTypes,
-                'industries' => $industries
-            ]);
-        }
-
-        // Build vendor query with filters
-        $vendorsQuery = CcbrtVendor::whereIn('id', $vendorIds);
+        // Build vendor query with filters (showing ALL vendors)
+        $vendorsQuery = CcbrtVendor::query();
 
         // Apply filters
         if ($filterVendorType) {

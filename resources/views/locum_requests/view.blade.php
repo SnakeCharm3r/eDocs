@@ -26,15 +26,27 @@
                             <div class="btn-group" role="group" aria-label="Locum Navigation">
                                 <a href="/locum-agreement-show" class="btn btn-outline-secondary btn-sm me-2">
                                     Locum Agreements
+                                    @if (!empty($pendingLocumAgreementCount) && $pendingLocumAgreementCount > 0)
+                                        <span class="badge bg-danger ms-1">{{ $pendingLocumAgreementCount }}</span>
+                                    @endif
                                 </a>
                                 <a href="{{ route('locum-requests.view') }}" class="btn btn-outline-primary btn-sm">
                                     Locum Requests
+                                    @if ($requests->count() > 0)
+                                        <span class="badge bg-warning text-dark ms-1">{{ $requests->count() }}</span>
+                                    @endif
+                                </a>
+                                <a href="{{ route('night-shift.approve.index') }}" class="btn btn-outline-secondary btn-sm">
+                                    Night Allowances
+                                    @if (!empty($pendingNightShiftCount) && $pendingNightShiftCount > 0)
+                                        <span class="badge bg-danger ms-1">{{ $pendingNightShiftCount }}</span>
+                                    @endif
                                 </a>
                                 @can('view_locum_reports')
                                     <a href="{{ route('locum-requests.report') }}" class="btn btn-outline-secondary btn-sm">
                                         Reports
                                     </a>
-                                    @endif
+                                @endcan
                                 </div>
                                 <h4 class="page-title mb-0 fs-6">Pending Locum Requests</h4>
                             </div>

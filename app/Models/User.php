@@ -7,12 +7,96 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Auth\Notifications\ResetPassword as ResetPasswordNotification;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Session;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
-    use HasApiTokens, HasFactory, Notifiable, HasRoles;
+    use HasApiTokens, HasFactory, Notifiable, HasRoles {
+        HasRoles::hasRole as traitHasRole;
+    }
+
+    /**
+     * Session key for the currently selected "active" role (view-as filter).
+     * When set, hasRole/hasAnyRole/can are scoped to this role only; DB roles are unchanged.
+     */
+    public const ACTIVE_ROLE_SESSION_KEY = 'active_role';
+
+    /**
+     * Get the currently active role name for this request (view-as filter), or null for "all roles".
+     */
+    public function getActiveRoleName(): ?string
+    {
+        $name = Session::get(self::ACTIVE_ROLE_SESSION_KEY);
+        if ($name === null || $name === '') {
+            return null;
+        }
+        return (string) $name;
+    }
+
+    /**
+     * Determine if the model has (one of) the given role(s), scoped by active role when set.
+     */
+    public function hasRole($roles, ?string $guard = null): bool
+    {
+        $active = $this->getActiveRoleName();
+        if ($active !== null) {
+            $this->loadMissing('roles');
+            if (!$this->roles->contains('name', $active)) {
+                return false;
+            }
+            $check = is_string($roles) && strpos($roles, '|') !== false
+                ? $this->convertPipeToArray($roles)
+                : \Illuminate\Support\Arr::wrap($roles);
+            $roleNames = collect($check)->flatten();
+            foreach ($roleNames as $r) {
+                $name = $r instanceof \Spatie\Permission\Contracts\Role ? $r->name : $r;
+                if (is_string($name) && $name === $active) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return $this->traitHasRole($roles, $guard);
+    }
+
+    /**
+     * Determine if the model has any of the given role(s), scoped by active role when set.
+     */
+    public function hasAnyRole(...$roles): bool
+    {
+        return $this->hasRole($roles);
+    }
+
+    /**
+     * Return permissions via roles, scoped to active role when set.
+     */
+    public function getPermissionsViaRoles(): Collection
+    {
+        $active = $this->getActiveRoleName();
+        if ($active !== null) {
+            $this->loadMissing('roles');
+            if (!$this->roles->contains('name', $active)) {
+                return collect();
+            }
+            try {
+                $roleClass = $this->getRoleClass();
+                $role = $roleClass::findByName($active, $this->getDefaultGuardName());
+                if (!$role) {
+                    return collect();
+                }
+                $role->load('permissions');
+                return $role->permissions->sort()->values();
+            } catch (\Throwable $e) {
+                return collect();
+            }
+        }
+        return $this->loadMissing('roles', 'roles.permissions')
+            ->roles->flatMap(fn ($role) => $role->permissions)
+            ->sort()->values();
+    }
 
     /**
      * Send the password reset notification.
@@ -143,6 +227,7 @@ class User extends Authenticatable
         'approvelocum',
         'platform_id',
         'primary_platform_id',
+        'assigned_entity_id',
     ];
 
 
@@ -172,6 +257,16 @@ class User extends Authenticatable
     public function department()
     {
         return $this->belongsTo(Departments::class, 'deptId');
+    }
+
+    public function assignedEntity()
+    {
+        return $this->belongsTo(Division::class, 'assigned_entity_id');
+    }
+
+    public function assignedEntities()
+    {
+        return $this->belongsToMany(Division::class, 'user_assigned_entities', 'user_id', 'division_id')->withTimestamps();
     }
 
     public function employmentType()
@@ -204,6 +299,11 @@ class User extends Authenticatable
         return $this->belongsTo(JobTitle::class, 'job_title');
     }
 
+    public function certificateOfService()
+    {
+        return $this->hasOne(\App\Models\CertificateOfService::class, 'user_id');
+    }
+
     public function hecsCreated()
     {
         return $this->hasMany(Hec::class, 'createdBy');
@@ -234,6 +334,12 @@ class User extends Authenticatable
     public function locumAgreements()
     {
         return $this->hasMany(LocumAgreement::class, 'user_id');
+    }
+
+    public function onCallRates()
+    {
+        return $this->belongsToMany(OnCallRate::class, 'user_oncall_rate', 'user_id', 'on_call_rate_id')
+            ->withTimestamps();
     }
     public function platforms()
     {
@@ -271,5 +377,63 @@ class User extends Authenticatable
     {
         $full = trim(($this->fname ?? '') . ' ' . ($this->mname ?? '') . ' ' . ($this->lname ?? ''));
         return $full !== '' ? $full : ($this->username ?? $this->email ?? '—');
+    }
+
+    /**
+     * Determine whether the user is a finance officer
+     * (legacy global role or entity-specific finance role).
+     */
+    public function hasFinanceOfficerRole(): bool
+    {
+        if ($this->hasRole('finance officer')) {
+            return true;
+        }
+
+        $this->loadMissing('roles');
+        return $this->roles->contains(function ($role) {
+            return str_starts_with(strtolower((string) $role->name), 'finance-officer-');
+        });
+    }
+
+    /**
+     * Derive the line manager / approver for this user based on CCBRT org hierarchy:
+     *   Regular staff  → user with 'line-manager' role in same department
+     *   Line manager   → HEC member (COO/CFO/CMS/CCDRO) via department->hec->hec_level_name
+     *   HEC member     → CEO
+     *   CEO            → null (HR handles)
+     */
+    public function getLineManagerAttribute(): ?self
+    {
+        try {
+            if ($this->traitHasRole('ceo')) {
+                return null;
+            }
+
+            $hecRoles = ['coo', 'cfo', 'cms', 'ccdro'];
+            if ($this->traitHasRole($hecRoles)) {
+                return self::role('ceo')->first();
+            }
+
+            if ($this->traitHasRole('line-manager')) {
+                $dept = $this->department;
+                if ($dept && $dept->hec) {
+                    $roleName = strtolower($dept->hec->hec_level_name);
+                    return self::role($roleName)->first();
+                }
+                return null;
+            }
+
+            // Regular staff: line-manager in the same department
+            if ($this->deptId) {
+                return self::role('line-manager')
+                    ->where('deptId', $this->deptId)
+                    ->where('id', '!=', $this->id)
+                    ->first();
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 }

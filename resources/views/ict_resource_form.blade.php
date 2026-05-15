@@ -92,6 +92,43 @@
                                     </p>
                                 </div>
                             </div>
+
+                            @if (($ictForm->status ?? null) == -1 && !empty($latestRejectionHistory) && !empty($latestRejectionHistory->rejection_reason))
+                                <div class="row mt-3">
+                                    <div class="col-12">
+                                        <div class="alert alert-danger mb-0" role="alert">
+                                            <strong>Rejection Comment:</strong>
+                                            <div class="mt-1">{{ $latestRejectionHistory->rejection_reason }}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+
+                    <!-- Reject Modal -->
+                    <div class="modal fade" id="rejectCommentModal" tabindex="-1" aria-labelledby="rejectCommentModalLabel"
+                        aria-hidden="true">
+                        <div class="modal-dialog modal-dialog-centered">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title" id="rejectCommentModalLabel">Reject IT Access Form</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="mb-3">
+                                        <label for="reject_reason" class="form-label">Reason for rejection <span class="text-danger">*</span></label>
+                                        <textarea class="form-control" id="reject_reason" rows="4"
+                                            placeholder="Enter reason here..."></textarea>
+                                        <div class="form-text">Provide a clear reason so the requester can correct and resubmit.</div>
+                                    </div>
+                                    <div class="text-danger small" id="reject_reason_error" style="display:none;">You must provide a reason.</div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                    <button type="button" class="btn btn-danger" id="confirmRejectBtn">Reject</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -761,6 +798,8 @@
                             return;
                         }
 
+                        console.log('[approveForm] Starting approval for accessId:', accessId);
+
                         $.ajaxSetup({
                             headers: {
                                 'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
@@ -778,6 +817,7 @@
                             confirmButtonColor: '#007A33'
                         }).then(result => {
                             if (result.isConfirmed) {
+                                console.log('[approveForm] User confirmed approval');
                                 Swal.fire({
                                     title: 'Processing...',
                                     text: 'Please wait while the form is being approved.',
@@ -785,8 +825,11 @@
                                     allowEscapeKey: false,
                                     didOpen: () => {
                                         Swal.showLoading();
+                                        console.log('[approveForm] Loading spinner shown');
                                     }
                                 });
+
+                                console.log('[approveForm] Sending AJAX POST to /approve_form with access_id:', accessId);
 
                                 $.ajax({
                                     method: 'POST',
@@ -801,33 +844,32 @@
                                         'X-Requested-With': 'XMLHttpRequest'
                                     },
                                     success: response => {
+                                        console.log('[approveForm] AJAX success. Response:', response);
                                         if (response.success) {
                                             Swal.fire({
                                                 title: 'Success',
-                                                text: response.message ||
-                                                    'Form approved successfully.',
+                                                text: response.message || 'Form approved successfully.',
                                                 icon: 'success',
                                                 confirmButtonText: 'OK',
                                                 confirmButtonColor: '#007A33'
                                             }).then(() => {
-                                                window.location.href =
-                                                    '/requestapprove';
+                                                window.location.href = '/requestapprove';
                                             });
                                         } else {
+                                            console.error('[approveForm] Server returned success:false', response);
                                             Swal.fire({
                                                 title: 'Error',
-                                                text: response.message ||
-                                                    'Failed to approve form.',
+                                                text: response.message || 'Failed to approve form.',
                                                 icon: 'error',
                                                 confirmButtonText: 'OK'
                                             });
                                         }
                                     },
                                     error: (xhr, status, error) => {
-                                        console.error('Approval failed:', error, xhr
-                                            .responseJSON);
-                                        let errorMessage =
-                                            'Failed to approve form. Please try again.';
+                                        console.error('[approveForm] AJAX error. Status:', status, 'Error:', error);
+                                        console.error('[approveForm] XHR object:', xhr);
+                                        console.error('[approveForm] Response text:', xhr.responseText);
+                                        let errorMessage = 'Failed to approve form. Please try again.';
 
                                         if (xhr.responseJSON) {
                                             if (xhr.responseJSON.message) {
@@ -835,19 +877,18 @@
                                             } else if (xhr.responseJSON.error) {
                                                 errorMessage = xhr.responseJSON.error;
                                             }
-
-                                            // Handle validation errors
                                             if (xhr.responseJSON.errors) {
-                                                const errors = Object.values(xhr
-                                                    .responseJSON.errors).flat();
+                                                const errors = Object.values(xhr.responseJSON.errors).flat();
                                                 errorMessage = errors.join('\n');
                                             }
                                         } else if (xhr.status === 0) {
-                                            errorMessage =
-                                                'Network error. Please check your connection.';
+                                            errorMessage = 'Network error. Please check your connection.';
+                                        } else if (xhr.status === 403) {
+                                            errorMessage = 'Permission denied. You may not have the required permissions to approve this form.';
+                                        } else if (xhr.status === 404) {
+                                            errorMessage = 'Form or workflow not found. It may have been already processed.';
                                         } else if (xhr.status === 500) {
-                                            errorMessage =
-                                                'Server error. Please try again later.';
+                                            errorMessage = 'Server error. Please try again later.';
                                         }
 
                                         Swal.fire({
@@ -857,6 +898,9 @@
                                             confirmButtonText: 'OK',
                                             confirmButtonColor: '#dc3545'
                                         });
+                                    },
+                                    complete: () => {
+                                        console.log('[approveForm] AJAX request completed');
                                     }
                                 });
                             }
@@ -867,109 +911,109 @@
                     window.rejectForm = function(accessId) {
                         // Double check Swal is available
                         if (typeof Swal === 'undefined') {
-                            alert('SweetAlert2 is not loaded. Please refresh the page and try again.');
-                            console.error('Swal is not defined');
                             return;
                         }
 
-                        Swal.fire({
-                            title: 'Reason for Rejection',
-                            text: 'Please provide a reason for rejecting this form:',
-                            input: 'textarea',
-                            inputPlaceholder: 'Enter reason here...',
-                            showCancelButton: true,
-                            confirmButtonText: 'Reject',
-                            cancelButtonText: 'Cancel',
-                            reverseButtons: true,
-                            confirmButtonColor: '#dc3545',
-                            inputValidator: value => !value && 'You must provide a reason!'
-                        }).then(result => {
-                            if (result.isConfirmed) {
-                                Swal.fire({
-                                    title: 'Processing...',
-                                    text: 'Please wait while the form is being rejected.',
-                                    allowOutsideClick: false,
-                                    allowEscapeKey: false,
-                                    didOpen: () => {
-                                        Swal.showLoading();
-                                    }
-                                });
+                        var modalEl = document.getElementById('rejectCommentModal');
+                        if (!modalEl || typeof bootstrap === 'undefined') {
+                            Swal.fire({
+                                title: 'Error',
+                                text: 'Reject modal is not available. Please refresh and try again.',
+                                icon: 'error',
+                                confirmButtonColor: '#dc3545'
+                            });
+                            return;
+                        }
 
-                                $.ajax({
-                                    method: 'POST',
-                                    url: '/reject_form',
-                                    data: {
-                                        access_id: accessId,
-                                        reason: result.value,
-                                        _token: $('meta[name="csrf-token"]').attr('content')
-                                    },
-                                    dataType: 'json',
-                                    headers: {
-                                        'Accept': 'application/json',
-                                        'X-Requested-With': 'XMLHttpRequest'
-                                    },
-                                    success: response => {
-                                        if (response.success) {
-                                            Swal.fire({
-                                                title: 'Rejected',
-                                                text: response.message ||
-                                                    'Form rejected successfully.',
-                                                icon: 'success',
-                                                confirmButtonText: 'OK',
-                                                confirmButtonColor: '#007A33'
-                                            }).then(() => {
-                                                window.location.href =
-                                                    '/requestapprove';
-                                            });
-                                        } else {
-                                            Swal.fire({
-                                                title: 'Error',
-                                                text: response.message ||
-                                                    'Failed to reject form.',
-                                                icon: 'error',
-                                                confirmButtonText: 'OK'
-                                            });
-                                        }
-                                    },
-                                    error: (xhr, status, error) => {
-                                        console.error('Rejection failed:', error, xhr
-                                            .responseJSON);
-                                        let errorMessage =
-                                            'Failed to reject form. Please try again.';
+                        modalEl.dataset.accessId = accessId;
+                        var reasonEl = document.getElementById('reject_reason');
+                        var errorEl = document.getElementById('reject_reason_error');
+                        if (reasonEl) reasonEl.value = '';
+                        if (errorEl) errorEl.style.display = 'none';
 
-                                        if (xhr.responseJSON) {
-                                            if (xhr.responseJSON.message) {
-                                                errorMessage = xhr.responseJSON.message;
-                                            } else if (xhr.responseJSON.error) {
-                                                errorMessage = xhr.responseJSON.error;
+                        var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+                        modal.show();
+                    };
+
+                    // Modal confirm reject
+                    var confirmBtn = document.getElementById('confirmRejectBtn');
+                    if (confirmBtn) {
+                        confirmBtn.addEventListener('click', function() {
+                            var modalEl = document.getElementById('rejectCommentModal');
+                            var accessId = modalEl ? modalEl.dataset.accessId : null;
+                            var reasonEl = document.getElementById('reject_reason');
+                            var reason = reasonEl ? reasonEl.value.trim() : '';
+                            var errorEl = document.getElementById('reject_reason_error');
+
+                            if (!reason) {
+                                if (errorEl) errorEl.style.display = 'block';
+                                return;
+                            }
+                            if (errorEl) errorEl.style.display = 'none';
+
+                            Swal.fire({
+                                title: 'Processing...',
+                                text: 'Please wait while the form is being rejected.',
+                                allowOutsideClick: false,
+                                allowEscapeKey: false,
+                                didOpen: () => {
+                                    Swal.showLoading();
+                                }
+                            });
+
+                            $.ajax({
+                                method: 'POST',
+                                url: '/reject_form',
+                                data: {
+                                    access_id: accessId,
+                                    reason: reason,
+                                    _token: $('meta[name="csrf-token"]').attr('content')
+                                },
+                                dataType: 'json',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'X-Requested-With': 'XMLHttpRequest'
+                                },
+                                success: response => {
+                                    if (response.success) {
+                                        try {
+                                            if (modalEl && typeof bootstrap !== 'undefined') {
+                                                bootstrap.Modal.getOrCreateInstance(modalEl).hide();
                                             }
-
-                                            // Handle validation errors
-                                            if (xhr.responseJSON.errors) {
-                                                const errors = Object.values(xhr
-                                                    .responseJSON.errors).flat();
-                                                errorMessage = errors.join('\n');
-                                            }
-                                        } else if (xhr.status === 0) {
-                                            errorMessage =
-                                                'Network error. Please check your connection.';
-                                        } else if (xhr.status === 500) {
-                                            errorMessage =
-                                                'Server error. Please try again later.';
-                                        }
+                                        } catch (e) {}
 
                                         Swal.fire({
+                                            title: 'Rejected',
+                                            text: response.message || 'Form rejected successfully.',
+                                            icon: 'success',
+                                            confirmButtonColor: '#007A33'
+                                        }).then(() => {
+                                            window.location.href = '/requestapprove';
+                                        });
+                                    } else {
+                                        Swal.fire({
                                             title: 'Error',
-                                            text: errorMessage,
+                                            text: response.message || 'Failed to reject form.',
                                             icon: 'error',
-                                            confirmButtonText: 'OK',
                                             confirmButtonColor: '#dc3545'
                                         });
                                     }
-                                });
-                            }
+                                },
+                                error: xhr => {
+                                    let errorMessage = 'Server error. Please try again later.';
+                                    if (xhr.responseJSON && xhr.responseJSON.message) {
+                                        errorMessage = xhr.responseJSON.message;
+                                    }
+                                    Swal.fire({
+                                        title: 'Error',
+                                        text: errorMessage,
+                                        icon: 'error',
+                                        confirmButtonColor: '#dc3545'
+                                    });
+                                }
+                            });
                         });
-                    };
+                    }
                 }); // End of waitForSwal callback
             })(); // End of IIFE
 

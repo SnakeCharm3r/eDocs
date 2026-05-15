@@ -40,16 +40,46 @@ class       LocumRequestController extends Controller
         $user = \Auth::user();
 
         // Agreement (for header gates)
+        // Get the most recent HR-approved agreement (status = 2)
+        // Order by updated_at DESC to get the most recently approved agreement by HR
+        // If there's a newer agreement that's not HR-approved yet, use the previous HR-approved one
+        $today = \Carbon\Carbon::today();
         $agreement = \App\Models\LocumAgreement::where('user_id', $user->id)
-            ->latest()
+            ->where('status', 2) // Only currently active HR-approved agreements
+            ->where(function($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->orderByDesc('updated_at') // Most recently approved by HR
+            ->orderByDesc('created_at') // Fallback to creation date
             ->first();
 
-        // User's own requests with workflow + histories
+        // If no valid HR-approved agreement, get the most recent approved or expired one for display
+        if (!$agreement) {
+            $agreement = \App\Models\LocumAgreement::where('user_id', $user->id)
+                ->whereIn('status', [2, 5]) // Approved or Expired
+                ->orderByDesc('updated_at') // Most recently approved by HR
+                ->orderByDesc('created_at') // Fallback to creation date
+                ->first();
+        }
+
+        // If still no agreement, check for pending agreements (status 0 = pending LM, status 1 = pending HR)
+        // so the view doesn't show "No active locum agreement" when one is in progress
+        if (!$agreement) {
+            $agreement = \App\Models\LocumAgreement::where('user_id', $user->id)
+                ->whereIn('status', [0, 1]) // Pending agreements
+                ->whereNull('rejection_status')
+                ->orderByDesc('created_at')
+                ->first();
+        }
+
+        // User's own requests with workflow + histories + agreement (for applicable year)
         $requests = \App\Models\LocumRequest::query()
             ->where('user_id', $user->id)
             ->with([
                 'user:id,username,fname,lname,deptId',
                 'user.department:id,dept_name',
+                'locumAgreement:id,start_date,end_date,created_at',
                 'workflow:id,user_id,locum_request_id,work_flow_completed,work_flow_status',
                 'workflow.histories' => function ($q) {
                     $q->orderByDesc('id');
@@ -152,9 +182,22 @@ class       LocumRequestController extends Controller
                 }
             }
 
+            // Applicable year and period from the linked locum agreement
+            $applicableYear = null;
+            $agreement_period = '—';
+            if ($r->locumAgreement) {
+                $ag = $r->locumAgreement;
+                $start = $ag->start_date ? \Carbon\Carbon::parse($ag->start_date) : \Carbon\Carbon::parse($ag->created_at);
+                $applicableYear = (int) $start->format('Y');
+                $end = $ag->end_date ? \Carbon\Carbon::parse($ag->end_date) : $start->copy()->endOfYear();
+                $agreement_period = $start->format('d M Y') . ' – ' . $end->format('d M Y');
+            }
+
             $rows[] = [
                 'id'              => $r->id,
                 'month_label'     => $monthLabel,
+                'applicable_year' => $applicableYear,
+                'agreement_period' => $agreement_period,
                 'days'            => (int)$r->number_of_days,
                 'amount_fmt'      => number_format((float)$r->total_amount_payable, 2),
                 'status_label'    => $label,
@@ -238,25 +281,269 @@ class       LocumRequestController extends Controller
             $pendingGroups = collect($flat)->groupBy('month')->sortKeys();
         }
 
+        // Get year filter from request (default: 'all' to show all years)
+        $filterYear = $request->query('hr_year', 'all');
+
+        // First, get ALL HR-approved requests to determine available years
+        $allHrApprovedQuery = \App\Models\LocumRequest::query()
+            ->where('user_id', $user->id)
+            ->whereHas('workflow', function ($q) {
+                $q->where('work_flow_completed', 1)
+                  ->where('work_flow_status', 1);
+            })
+            ->whereHas('workflow.histories', function ($q) {
+                $q->where('step_name', 'HR Approval')
+                  ->where('status', 1);
+            });
+
+        $allHrApprovedRequests = $allHrApprovedQuery->get();
+
+        // Get all available years from ALL HR-approved requests
+        $availableYears = [];
+        foreach ($allHrApprovedRequests as $r) {
+            $year = null;
+            if (\Schema::hasColumn('locum_requests', 'locum_year') && $r->locum_year) {
+                $year = (int)$r->locum_year;
+            } else {
+                $year = (int)\Carbon\Carbon::parse($r->created_at)->year;
+            }
+            if ($year && !in_array($year, $availableYears)) {
+                $availableYears[] = $year;
+            }
+        }
+        rsort($availableYears); // Sort descending (newest first)
+
+        // Now fetch filtered HR-approved requests for display
+        $hrApprovedRequestsQuery = \App\Models\LocumRequest::query()
+            ->where('user_id', $user->id)
+            ->whereHas('workflow', function ($q) {
+                $q->where('work_flow_completed', 1)
+                  ->where('work_flow_status', 1);
+            })
+            ->whereHas('workflow.histories', function ($q) {
+                $q->where('step_name', 'HR Approval')
+                  ->where('status', 1);
+            })
+            ->with([
+                'user:id,username,fname,lname,deptId',
+                'user.department:id,dept_name',
+                'workflow:id,user_id,locum_request_id,work_flow_completed,work_flow_status',
+                'workflow.histories' => function ($q) {
+                    $q->where('step_name', 'HR Approval')
+                      ->where('status', 1)
+                      ->orderByDesc('id')
+                      ->limit(1);
+                },
+            ]);
+
+        // Filter by locum year if provided and not 'all'
+        if ($filterYear && $filterYear !== 'all' && is_numeric($filterYear)) {
+            $hrApprovedRequestsQuery->where(function ($q) use ($filterYear) {
+                // Check if locum_year column exists and filter by it
+                if (\Schema::hasColumn('locum_requests', 'locum_year')) {
+                    $q->where('locum_year', (int)$filterYear);
+                } else {
+                    // Fallback: filter by created_at year if locum_year doesn't exist
+                    $q->whereYear('created_at', (int)$filterYear);
+                }
+            });
+        }
+
+        $hrApprovedRequests = $hrApprovedRequestsQuery->orderByDesc('created_at')->get();
+
+        // Format HR-approved requests for display
+        $hrApprovedRows = [];
+        foreach ($hrApprovedRequests as $r) {
+            $monthLabel = ($r->locum_month ?: '-') . ' / ' . ($r->locum_year ?: \Carbon\Carbon::parse($r->created_at)->format('Y'));
+
+            $workedDays = is_string($r->worked_days)
+                ? (json_decode($r->worked_days, true) ?: [])
+                : (is_array($r->worked_days) ? $r->worked_days : []);
+
+            // Basic employee/department
+            $employee = 'N/A';
+            $dept     = 'N/A';
+            if ($r->user) {
+                $employee = $r->user->username ?: trim(($r->user->fname ?? '') . ' ' . ($r->user->lname ?? '')) ?: 'N/A';
+                $dept     = $r->user->department ? ($r->user->department->dept_name ?: 'N/A') : 'N/A';
+            }
+
+            // Get HR approval date
+            $hrApprovedAt = '—';
+            $wf = $r->workflow;
+            $hist = $wf ? $wf->histories : collect();
+            $hrHistory = $hist->first();
+            if ($hrHistory && ($hrHistory->attend_date ?: $hrHistory->updated_at ?: $hrHistory->created_at)) {
+                $hrApprovedAt = \Carbon\Carbon::parse($hrHistory->attend_date ?: $hrHistory->updated_at ?: $hrHistory->created_at)->format('d M Y H:i');
+            }
+
+            $hrApprovedRows[] = [
+                'id'              => $r->id,
+                'month_label'     => $monthLabel,
+                'days'            => (int)$r->number_of_days,
+                'amount_fmt'      => number_format((float)$r->total_amount_payable, 2),
+                'status_label'    => 'HR Approved',
+                'status_class'    => 'bg-success',
+                'created_at'      => \Carbon\Carbon::parse($r->created_at)->format('d M Y H:i'),
+                'created_iso'     => \Carbon\Carbon::parse($r->created_at)->format('Y-m-d H:i:s'),
+                'worked_days'     => $workedDays,
+                'hr_approved_at'  => $hrApprovedAt,
+                'employee'        => $employee,
+                'dept'            => $dept,
+            ];
+        }
+
         // Gate to allow "Claim Locum"
-        $canCreate = !empty($agreement)
-            && (int)($agreement->status ?? 0) === 2
-            && (strtolower((string)($user->status ?? '')) === 'active');
+        // User must have at least ONE valid (non-expired) approved agreement (status = 2)
+        // OR: expired but within admin-set "use until" grace date
+        $today = \Carbon\Carbon::today();
+        $hasValidApprovedAgreement = \App\Models\LocumAgreement::where('user_id', $user->id)
+            ->where('status', 2) // Approved
+            ->where(function($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->exists();
+
+        // Admin setting: date until when users may continue using expired agreement for new claims (same as locum-rates "Valid for claiming (until ...)")
+        $expiredAgreementUseUntilRaw = trim((string) (\App\Http\Controllers\SettingsController::getSetting('locum_expired_agreement_use_until', '') ?? ''));
+        $expiredAgreementUseUntilDate = null;
+        $expiredButUseUntil = false;
+        $validForClaimingUntilFormatted = null; // display as "Valid for claiming (until [date])" like on locum-rates
+        if ($expiredAgreementUseUntilRaw !== '') {
+            try {
+                $useUntil = \Carbon\Carbon::parse($expiredAgreementUseUntilRaw)->endOfDay();
+                if ($today->lte($useUntil)) {
+                    $validForClaimingUntilFormatted = \Carbon\Carbon::parse($expiredAgreementUseUntilRaw)->format('d M Y');
+                    if ($agreement && in_array((int)($agreement->status ?? 0), [2, 5])) {
+                        $agreementEnd = $agreement->end_date
+                            ? \Carbon\Carbon::parse($agreement->end_date)->endOfDay()
+                            : null;
+                        if ($agreementEnd && $today->gt($agreementEnd)) {
+                            $expiredButUseUntil = true;
+                            $expiredAgreementUseUntilDate = $validForClaimingUntilFormatted;
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                // ignore invalid date
+            }
+        }
+        // Fallback: if no setting, use max end_date from HR-approved agreements (e.g. after "Expire All" on another server)
+        if ($validForClaimingUntilFormatted === null) {
+            $maxEnd = \App\Models\LocumAgreement::where('has_contract', true)
+                ->whereNotNull('end_date')
+                ->where('end_date', '>=', $today)
+                ->max('end_date');
+            if ($maxEnd) {
+                try {
+                    $d = \Carbon\Carbon::parse($maxEnd)->endOfDay();
+                    if ($today->lte($d)) {
+                        $validForClaimingUntilFormatted = $d->format('d M Y');
+                        if ($agreement && in_array((int)($agreement->status ?? 0), [2, 5])) {
+                            $agreementEnd = $agreement->end_date ? \Carbon\Carbon::parse($agreement->end_date)->endOfDay() : null;
+                            if ($agreementEnd && $today->gt($agreementEnd)) {
+                                $expiredButUseUntil = true;
+                                $expiredAgreementUseUntilDate = $validForClaimingUntilFormatted;
+                            }
+                        }
+                    }
+                } catch (\Exception $e) {
+                }
+            }
+        }
+
+        // User status check: allow if active, empty, null, or not explicitly set to inactive
+        $userStatus = strtolower(trim((string)($user->status ?? '')));
+        $isUserActive = empty($userStatus)
+            || $userStatus === 'active'
+            || $userStatus === null
+            || !in_array($userStatus, ['inactive', 'suspended', 'disabled', 'deactivated']);
+
+        $canCreate = ($hasValidApprovedAgreement || $expiredButUseUntil) && $isUserActive;
+
+        // Check if all approved agreements are expired (to show message about creating new agreement)
+        $allApprovedExpired = false;
+        if (!$hasValidApprovedAgreement && !$expiredButUseUntil) {
+            $approvedCount = \App\Models\LocumAgreement::where('user_id', $user->id)
+                ->whereIn('status', [2, 5])
+                ->count();
+            if ($approvedCount > 0) {
+                // User has approved agreements but all are expired
+                $allApprovedExpired = true;
+            }
+        }
+
+        // Near-expiry: valid agreement with end_date within 10 days (user can keep using current rate until expiry)
+        $agreementNearExpiry = false;
+        $agreementExpiresInDays = null;
+        $agreementEndDateFormatted = null;
+        if ($hasValidApprovedAgreement && $agreement && $agreement->end_date) {
+            $endDate = \Carbon\Carbon::parse($agreement->end_date)->startOfDay();
+            $todayStart = \Carbon\Carbon::today()->startOfDay();
+            if ($endDate->gte($todayStart)) {
+                $daysRemaining = (int) abs($todayStart->diffInDays($endDate, false));
+                if ($daysRemaining <= 10 && $daysRemaining >= 0) {
+                    $agreementNearExpiry = true;
+                    $agreementExpiresInDays = $daysRemaining;
+                    $agreementEndDateFormatted = $endDate->format('d M Y');
+                }
+            }
+        }
+
+        // Locum agreement status label for header (Agreement button). When admin set "valid until" date, use that instead of "Expiring soon" / "Active until [end_date]"
+        $locumAgreementStatus = null;
+        if ($agreement) {
+            $todayStart = \Carbon\Carbon::today()->startOfDay();
+            $isApproved = in_array((int) ($agreement->status ?? 0), [2, 5]);
+            $endDate = $agreement->end_date
+                ? \Carbon\Carbon::parse($agreement->end_date)->startOfDay()
+                : \Carbon\Carbon::parse($agreement->created_at)->addYear()->startOfDay();
+            
+            // Calculate days until expiration
+            $daysUntilExpiration = $todayStart->diffInDays($endDate, false);
+            $isNearExpiration = $daysUntilExpiration <= 60 && $daysUntilExpiration > 0;
+            
+            if (!$isApproved) {
+                $locumAgreementStatus = 'Pending approval';
+            } elseif ($endDate->lt($todayStart)) {
+                // Expired agreements should only show "Expired" - no validity information
+                $locumAgreementStatus = 'Expired';
+            } elseif ($isApproved && $validForClaimingUntilFormatted && $isNearExpiration) {
+                // Only show "Valid for claiming" when within 60 days of expiration and not expired
+                $locumAgreementStatus = 'Valid for claiming (until ' . $validForClaimingUntilFormatted . ')';
+            } elseif ($isNearExpiration) {
+                $locumAgreementStatus = 'Expiring soon';
+            } else {
+                $locumAgreementStatus = 'Active until ' . $endDate->format('d M Y');
+            }
+        }
 
         // Use a plain URL template to avoid route() with placeholders
         // Ensure you have: Route::get('/locum-requests/{id}/status', ...)
         $detailsUrlTemplate = url('/locum-requests/__ID__/status');
 
         return view('locum_requests.index_compact', [
-            'agreement'          => $agreement,
-            'canCreate'          => $canCreate,
-            'rows'               => $rows,
-            'pillCounts'         => $pillCounts,
-            'pendingGroups'      => $pendingGroups,
-            'shiftMap'           => $shiftMap,
-            'platformMap'        => $platformMap,
-            'unitMap'            => $unitMap,
-            'detailsUrlTemplate' => $detailsUrlTemplate,
+            'agreement'                  => $agreement,
+            'canCreate'                  => $canCreate,
+            'rows'                      => $rows,
+            'pillCounts'                => $pillCounts,
+            'pendingGroups'             => $pendingGroups,
+            'shiftMap'                  => $shiftMap,
+            'platformMap'               => $platformMap,
+            'unitMap'                   => $unitMap,
+            'detailsUrlTemplate'        => $detailsUrlTemplate,
+            'hrApprovedRows'            => $hrApprovedRows,
+            'filterYear'                => $filterYear,
+            'availableYears'            => $availableYears,
+            'agreementNearExpiry'       => $agreementNearExpiry,
+            'agreementExpiresInDays'    => $agreementExpiresInDays,
+            'agreementEndDateFormatted' => $agreementEndDateFormatted,
+            'locumAgreementStatus'      => $locumAgreementStatus,
+            'allApprovedExpired'        => $allApprovedExpired,
+            'expiredButUseUntil'        => $expiredButUseUntil,
+            'expiredAgreementUseUntilDate' => $expiredAgreementUseUntilDate,
+            'validForClaimingUntilFormatted' => $validForClaimingUntilFormatted,
         ]);
     }
 
@@ -439,7 +726,23 @@ class       LocumRequestController extends Controller
         // Get all requests for DataTables (no pagination needed)
         $requests = $query->orderBy('created_at', 'desc')->get();
 
-        return view('locum_requests.view', compact('requests'));
+        // Count pending locum agreements assigned to this approver
+        $pendingLocumAgreementCount = \DB::table('work_flow_histories')
+            ->join('workflows', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
+            ->where('work_flow_histories.attended_by', $user->id)
+            ->where('work_flow_histories.status', 0)
+            ->whereNotNull('workflows.locum_agreement_id')
+            ->count();
+
+        // Count pending night shift claims assigned to this approver
+        $pendingNightShiftCount = \DB::table('work_flow_histories')
+            ->join('workflows', 'work_flow_histories.work_flow_id', '=', 'workflows.id')
+            ->where('work_flow_histories.attended_by', $user->id)
+            ->where('work_flow_histories.status', 0)
+            ->whereNotNull('workflows.night_shift_claim_id')
+            ->count();
+
+        return view('locum_requests.view', compact('requests', 'pendingLocumAgreementCount', 'pendingNightShiftCount'));
     }
 
     public function export(Request $request)
@@ -491,22 +794,38 @@ class       LocumRequestController extends Controller
         return Excel::download(new LocumRequestsExport($requests, $department), $fileName);
     }
 
+    public function reportSelection()
+    {
+        $user = Auth::user();
+
+        // Check if user has permission to view approve summary
+        if (!$user->can('view locum reports') && ($user->can_view_approve_summary ?? 0) != 1) {
+            abort(403, 'You do not have permission to view reports.');
+        }
+
+        return view('reports.selection');
+    }
+
     public function report(Request $request)
     {
         $user = Auth::user();
+
+        // Check if user has permission to view approve summary
+        if (!$user->can('view locum reports') && ($user->can_view_approve_summary ?? 0) != 1) {
+            abort(403, 'You do not have permission to view this report.');
+        }
 
         // ⬇️ Summary filters (independent of the rest of the page)
         $summaryYear  = $request->query('summary_year');   // e.g. 2025
         $summaryMonth = $request->query('summary_month');  // 1..12
 
-        // Get all requests EXCEPT those fully approved by HR (to show pending requests that need attention)
-        // This helps approvers (line managers, in-charge, etc.) see what still needs their review
-        $actionedRequests = LocumRequest::whereHas('workflow')
-            ->whereDoesntHave('workflow.histories', function ($query) {
-                // Exclude requests where HR has approved (status = 1 and step_name = 'HR Approval')
-                $query->where('step_name', 'HR Approval')
-                    ->where('status', 1);
-            })
+        // Check if user is HR - HR users can view all requests including those approved many months ago
+        $isHR = $user->hasRole('hr');
+
+        // Get all requests
+        // For HR users: Include ALL requests (including those fully approved by HR) to view historical data
+        // For non-HR users: Exclude requests fully approved by HR (to show pending requests that need attention)
+        $actionedRequestsQuery = LocumRequest::whereHas('workflow')
             ->with([
                 'user.department',
                 'locumAgreement',
@@ -514,7 +833,18 @@ class       LocumRequestController extends Controller
                     $q->with(['attendedBy', 'forwardedBy', 'approver'])
                         ->orderBy('id', 'asc'); // Order by ID to show chronological order
                 },
-            ])
+            ]);
+
+        // Only exclude HR-approved requests if user is NOT HR
+        if (!$isHR) {
+            $actionedRequestsQuery->whereDoesntHave('workflow.histories', function ($query) {
+                // Exclude requests where HR has approved (status = 1 and step_name = 'HR Approval')
+                $query->where('step_name', 'HR Approval')
+                    ->where('status', 1);
+            });
+        }
+
+        $actionedRequests = $actionedRequestsQuery
             ->orderBy('created_at', 'desc')
             ->get();
 
@@ -638,13 +968,62 @@ class       LocumRequestController extends Controller
         $fromMonth = $request->query('from_month');
         $toYear = $request->query('to_year');
         $toMonth = $request->query('to_month');
+        $quickFilter = $request->query('quick_filter');
 
-        // Get all approved requests for trend analysis
-        $allApproved = LocumRequest::whereHas('workflow.histories', function ($q) {
+        // Handle quick filter presets
+        if ($quickFilter) {
+            $now = Carbon::now();
+            switch ($quickFilter) {
+                case 'this_month':
+                    $fromYear = $toYear = $now->year;
+                    $fromMonth = $toMonth = $now->month;
+                    break;
+                case 'last_month':
+                    $lastMonth = $now->copy()->subMonth();
+                    $fromYear = $toYear = $lastMonth->year;
+                    $fromMonth = $toMonth = $lastMonth->month;
+                    break;
+                case 'last_3_months':
+                    $threeMonthsAgo = $now->copy()->subMonths(2);
+                    $fromYear = $threeMonthsAgo->year;
+                    $fromMonth = $threeMonthsAgo->month;
+                    $toYear = $now->year;
+                    $toMonth = $now->month;
+                    break;
+                case 'this_year':
+                    $fromYear = $toYear = $now->year;
+                    $fromMonth = 1;
+                    $toMonth = $now->month;
+                    break;
+            }
+        }
+
+        // Determine date range first so we can scope the query
+        $startDate = null;
+        $endDate   = null;
+
+        if ($fromYear && $fromMonth) {
+            $startDate = Carbon::create($fromYear, $fromMonth, 1)->startOfMonth();
+        }
+        if ($toYear && $toMonth) {
+            $endDate = Carbon::create($toYear, $toMonth, 1)->endOfMonth();
+        }
+
+        // Default to current year (Jan → current month)
+        if (!$startDate || !$endDate) {
+            $endDate   = now()->endOfMonth();
+            $startDate = Carbon::create(now()->year, 1, 1)->startOfMonth();
+        }
+
+        // Get approved requests scoped to the selected year range
+        // Only include claims that have a payable amount (actually paid/processed)
+        $allApproved = LocumRequest::whereHas('workflow.histories', function ($q) use ($startDate, $endDate) {
             $q->where('step_name', 'HR Approval')
-                ->where('status', 1);
+                ->where('status', 1)
+                ->whereBetween('updated_at', [$startDate, $endDate]);
         })
             ->whereHas('workflow', fn($q) => $q->where('work_flow_completed', 1))
+            ->where('total_amount_payable', '>', 0)
             ->with(['user.department', 'workflow.histories' => function ($q) {
                 $q->where('step_name', 'HR Approval')
                     ->where('status', 1)
@@ -661,23 +1040,6 @@ class       LocumRequestController extends Controller
 
         // Get all departments for filter dropdown
         $allDepartments = Departments::orderBy('dept_name', 'asc')->get();
-
-        // Determine date range for monthly trends
-        $startDate = null;
-        $endDate = null;
-
-        if ($fromYear && $fromMonth) {
-            $startDate = Carbon::create($fromYear, $fromMonth, 1)->startOfMonth();
-        }
-        if ($toYear && $toMonth) {
-            $endDate = Carbon::create($toYear, $toMonth, 1)->endOfMonth();
-        }
-
-        // If no date range specified, default to last 12 months
-        if (!$startDate || !$endDate) {
-            $endDate = now()->endOfMonth();
-            $startDate = now()->subMonths(11)->startOfMonth();
-        }
 
         // Get top departments by total amount for the chart (max 8 to keep it readable)
         $topDepts = $allApproved->groupBy(fn($r) => $r->user?->department?->dept_name ?? 'N/A')
@@ -914,8 +1276,22 @@ class       LocumRequestController extends Controller
             ];
         })->values();
 
+        // Submitted at (create action) and HR approved at (approve action when completed)
+        $submittedAt = $req->created_at
+            ? \Carbon\Carbon::parse($req->created_at)->timezone('Africa/Dar_es_Salaam')->format('d M Y H:i')
+            : null;
+        $hrApprovedAt = null;
+        $hrHistory = $histories->firstWhere(fn ($h) => $h->step_name === 'HR Approval' && (string) $h->status === '1');
+        if ($hrHistory) {
+            $dt = $hrHistory->attend_date ?: $hrHistory->updated_at ?: $hrHistory->created_at;
+            if ($dt) {
+                $hrApprovedAt = \Carbon\Carbon::parse($dt)->timezone('Africa/Dar_es_Salaam')->format('d M Y H:i');
+            }
+        }
 
         return response()->json([
+            'created_at'    => $submittedAt,
+            'hr_approved_at' => $hrApprovedAt,
             'user' => [
                 'username'   => $req->user->username ?? '—',
                 'email'      => $req->user->email ?? '—',
@@ -945,24 +1321,64 @@ class       LocumRequestController extends Controller
     {
         $user = Auth::user(); // no need to load primaryPlatform anymore
 
-        // Must have an active/approved agreement
+        // Must have a valid (non-expired) approved agreement, or expired but within admin "use until" grace
+        $today = \Carbon\Carbon::today();
         $agreement = LocumAgreement::where('user_id', $user->id)
-            ->where('has_contract', true)
-            ->whereNull('rejection_status')
+            ->where('status', 2) // Only HR-approved agreements
+            ->where(function($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->orderByDesc('updated_at')
             ->orderByDesc('created_at')
             ->first();
 
         if (!$agreement) {
+            // Grace: admin may allow using expired agreement until a date
+            $useUntilRaw = SettingsController::getSetting('locum_expired_agreement_use_until', '');
+            if ($useUntilRaw !== '' && $useUntilRaw !== null) {
+                try {
+                    $useUntil = \Carbon\Carbon::parse($useUntilRaw)->endOfDay();
+                    if ($today->lte($useUntil)) {
+                        $candidate = LocumAgreement::where('user_id', $user->id)
+                            ->where('status', 2)
+                            ->orderByDesc('updated_at')
+                            ->orderByDesc('created_at')
+                            ->first();
+                        if ($candidate && $candidate->end_date && $today->gt(\Carbon\Carbon::parse($candidate->end_date)->endOfDay())) {
+                            $agreement = $candidate;
+                        }
+                    }
+                } catch (\Exception $e) {
+                }
+            }
+        }
+
+        if (!$agreement) {
+            $expiredApproved = LocumAgreement::where('user_id', $user->id)
+                ->where('status', 2)
+                ->where('end_date', '<', $today)
+                ->exists();
+
+            if ($expiredApproved) {
+                return redirect()->route('locum-requests.index')
+                    ->with('error', 'Your locum agreement has expired. Please create a new agreement to continue submitting claims.');
+            }
+
             return redirect()->route('locum-agreements.index')
-                ->with('error', 'You must have an active locum agreement to create a request.');
+                ->with('error', 'You must have an active HR-approved locum agreement to create a request. Only agreements approved by HR can be used.');
         }
-        if ($agreement->status === 'Pending') {
+
+        if ((int)$agreement->status !== 2) {
+            $statusMessages = [
+                0 => 'pending Line Manager approval',
+                1 => 'pending HR approval',
+                3 => 'rejected by Line Manager',
+                4 => 'rejected by HR',
+            ];
+            $statusMsg = $statusMessages[(int)$agreement->status] ?? 'not approved';
             return redirect()->route('locum-agreements.view')
-                ->with('error', 'Your locum agreement is pending approval. Please wait for it to be approved.');
-        }
-        if ($agreement->end_date && now()->gt($agreement->end_date)) {
-            return redirect()->route('locum-agreements.view')
-                ->with('error', 'Your locum agreement has expired.');
+                ->with('error', "Your locum agreement is {$statusMsg}. Only HR-approved agreements can be used for locum requests.");
         }
 
         // Target month defaults to previous month
@@ -1169,6 +1585,96 @@ class       LocumRequestController extends Controller
             ),
             $filename
         );
+    }
+
+    /**
+     * Show all approved locum requests for HR (similar to oncall approvedRequests)
+     */
+    public function approvedLocumRequests(Request $request)
+    {
+        $user     = Auth::user();
+        $isHR     = $user->hasRole('hr');
+
+        if (!$isHR) {
+            Alert::error('Unauthorized', 'Only HR can view approved locum requests.');
+            return redirect()->route('locum-requests.index');
+        }
+
+        // Payroll Year/Month (default: now in TZ)
+        $now      = Carbon::now('Africa/Dar_es_Salaam');
+        $payYear  = (int)($request->query('pay_year',  $now->year));
+        $payMonth = (int)($request->query('pay_month', $now->month));
+
+        // Optional filters
+        $filterDept   = $request->query('department');
+        $filterUser   = trim((string)$request->query('employee'));
+
+        // Get all departments for HR
+        $departments = Departments::orderBy('dept_name')->get();
+
+        $q = LocumRequest::with([
+            'user.department',
+            'locumAgreement',
+            'workflow.histories' => function ($h) {
+                $h->where('step_name', 'HR Approval')
+                    ->where('status', 1)
+                    ->latest();
+            }
+        ]);
+
+        // HR sees all approved requests
+        $q->whereHas('workflow.histories', function ($h) use ($payYear, $payMonth) {
+            $h->where('step_name', 'HR Approval')
+                ->where('status', 1)
+                ->whereYear('created_at', $payYear)
+                ->whereMonth('created_at', $payMonth);
+        })
+            ->whereHas('workflow', fn($w) => $w->where('work_flow_completed', 1))
+            ->where('status', 'approved');
+
+        // Optional department filter
+        if ($filterDept) {
+            $q->whereHas('user', fn($u) => $u->where('deptId', (int)$filterDept));
+        }
+
+        // Optional employee filter
+        if ($filterUser !== '') {
+            $q->whereHas('user', function ($u) use ($filterUser) {
+                $u->where(function ($sub) use ($filterUser) {
+                    $sub->where('fname', 'like', "%{$filterUser}%")
+                        ->orWhere('lname', 'like', "%{$filterUser}%")
+                        ->orWhere('username', 'like', "%{$filterUser}%")
+                        ->orWhere('email', 'like', "%{$filterUser}%");
+                });
+            });
+        }
+
+        $approvedRequests = $q->orderBy('created_at', 'desc')->get();
+
+        $monthsList = [
+            'January',
+            'February',
+            'March',
+            'April',
+            'May',
+            'June',
+            'July',
+            'August',
+            'September',
+            'October',
+            'November',
+            'December'
+        ];
+
+        return view('locum_requests.approved_requests', [
+            'approvedRequests' => $approvedRequests,
+            'departments'      => $departments,
+            'payYear'          => $payYear,
+            'payMonth'         => $payMonth,
+            'isHR'             => $isHR,
+            'filterUser'       => $filterUser,
+            'monthsList'       => $monthsList,
+        ]);
     }
 
     public function showWorkedDays($id)
@@ -1705,7 +2211,7 @@ class       LocumRequestController extends Controller
                 'November',
                 'December'
             ])],
-            'locum_year'                    => ['nullable', 'integer', 'min:2000', 'max:2100'],
+            'locum_year'                    => ['required', 'integer', 'min:2000', 'max:2100'],
 
             'worked_days'                   => ['required', 'array'],
             'worked_days.*.worked'          => ['nullable', 'boolean'],
@@ -1724,7 +2230,25 @@ class       LocumRequestController extends Controller
         $now  = \Carbon\Carbon::now($tz);
         $user = \Auth::user();
 
-        // 2) Resolve target year from first selected day if not provided
+        // 2) Validate month selection - prevent future months and require reason for previous months
+        $selectedMonth = $validated['locum_month'];
+        $selectedYear = (int)$validated['locum_year'];
+        $monthIndex = array_search($selectedMonth, [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ]);
+        $selectedDate = \Carbon\Carbon::create($selectedYear, $monthIndex + 1, 1, 0, 0, 0, $tz);
+        $currentMonthStart = $now->copy()->startOfMonth();
+
+        // Prevent claiming for future months
+        if ($selectedDate->gt($currentMonthStart)) {
+            return redirect()->back()
+                ->withInput()
+                ->withErrors(['locum_month' => 'You cannot claim for future months. Please select a month that has already passed.']);
+        }
+
+
+        // 3) Resolve target year from first selected day if not provided
         $selectedIsos = array_keys(array_filter(
             $validated['worked_days'] ?? [],
             fn($r) => (isset($r['worked']) && (int)$r['worked'] === 1)
@@ -1770,8 +2294,35 @@ class       LocumRequestController extends Controller
         }
 
         // 5) Agreement + rate
-        $agreement = \App\Models\LocumAgreement::findOrFail($validated['locum_agreement_id']);
-        $rate      = (float) ($agreement->locum_rate ?? 0);
+        // Use the agreement selected by user; must be HR-approved and either valid or expired within grace period
+        $today = \Carbon\Carbon::today();
+        $agreement = \App\Models\LocumAgreement::where('id', $validated['locum_agreement_id'])
+            ->where('user_id', $user->id)
+            ->where('status', 2)
+            ->first();
+
+        if (!$agreement) {
+            return back()->withErrors(['locum_agreement_id' => 'The selected agreement is not valid or not approved by HR.'])->withInput();
+        }
+
+        // Allow expired agreement only when admin "use until" grace is set and today <= use_until
+        $agreementEnd = $agreement->end_date ? \Carbon\Carbon::parse($agreement->end_date)->endOfDay() : null;
+        if ($agreementEnd && $today->gt($agreementEnd)) {
+            $useUntilRaw = SettingsController::getSetting('locum_expired_agreement_use_until', '');
+            if ($useUntilRaw === '' || $useUntilRaw === null) {
+                return back()->withErrors(['locum_agreement_id' => 'Your locum agreement has expired. Please create a new agreement to continue submitting claims.'])->withInput();
+            }
+            try {
+                $useUntil = \Carbon\Carbon::parse($useUntilRaw)->endOfDay();
+                if ($today->gt($useUntil)) {
+                    return back()->withErrors(['locum_agreement_id' => 'The grace period for using your expired agreement has ended. Please create a new agreement.'])->withInput();
+                }
+            } catch (\Exception $e) {
+                return back()->withErrors(['locum_agreement_id' => 'Your locum agreement has expired. Please create a new agreement.'])->withInput();
+            }
+        }
+
+        $rate = (float) ($agreement->locum_rate ?? 0);
 
         // 6) Normalize & validate selected entries (must be inside locked month/year)
         $rows = []; // each = {date, shift_id, platform_id, unit_id, hours}
@@ -1965,10 +2516,23 @@ class       LocumRequestController extends Controller
         $perShiftBreakdown['grand']['amount']      = round($grandLocums * $rate, 2);
         $perShiftBreakdown['grand']['remainder']   = round($grandRemainderHours, 2);
 
-        // “Eligible days” (optional)
+        // "Eligible days" - Group by date first, then check if total hours per day meet requirement
         $eligibleDaysCount = 0;
         $eligibleHoursSum  = 0.0;
+
+        // Group entries by date
+        $hoursByDate = [];
         foreach ($rows as $r) {
+            $dateKey = $r['iso_date'];
+            if (!isset($hoursByDate[$dateKey])) {
+                $hoursByDate[$dateKey] = [
+                    'total_hours' => 0.0,
+                    'platforms' => []
+                ];
+            }
+            $hoursByDate[$dateKey]['total_hours'] += $r['hours'];
+
+            // Track platform requirements for this date
             $pid = $r['platform_id'];
             $uid = $r['unit_id'] ?? null;
             $req = (int) ($uid && isset($unitHours[$uid]) && $unitHours[$uid]
@@ -1977,12 +2541,38 @@ class       LocumRequestController extends Controller
             if ($req <= 0) {
                 $req = 8;
             }
-            if ($r['hours'] >= $req) {
+            if (!isset($hoursByDate[$dateKey]['platforms'][$pid])) {
+                $hoursByDate[$dateKey]['platforms'][$pid] = [
+                    'required' => $req,
+                    'hours' => 0.0
+                ];
+            }
+            $hoursByDate[$dateKey]['platforms'][$pid]['hours'] += $r['hours'];
+        }
+
+        // Count eligible days: a day is eligible if at least one platform on that day meets its requirement
+        foreach ($hoursByDate as $dateKey => $dateData) {
+            $dayIsEligible = false;
+            $dayTotalHours = 0.0;
+
+            foreach ($dateData['platforms'] as $pid => $platData) {
+                $dayTotalHours += $platData['hours'];
+                // Day is eligible if any platform on that day meets its requirement
+                if ($platData['hours'] >= $platData['required']) {
+                    $dayIsEligible = true;
+                }
+            }
+
+            if ($dayIsEligible) {
                 $eligibleDaysCount += 1;
-                $eligibleHoursSum  += $r['hours'];
+                $eligibleHoursSum += $dayTotalHours;
             }
         }
         $eligibleHoursSum = round($eligibleHoursSum, 2);
+
+        // Use grand total hours (all hours claimed) instead of eligible hours for total_hours
+        // This ensures consistency between the summary table and the approver view
+        $totalHoursClaimed = round($grandHours, 2);
 
         // Distinct ids actually selected
         $distinctUnitIds     = collect($rows)->pluck('unit_id')->filter()->unique()->values()->all();
@@ -2007,20 +2597,21 @@ class       LocumRequestController extends Controller
             $locumRequest = \App\Models\LocumRequest::create([
                 'user_id'              => $user->id,
                 'locum_agreement_id'   => $validated['locum_agreement_id'],
+                'rate_used'            => $rate, // Store the rate used at creation time (for rejected claims)
                 'locum_month'          => $validated['locum_month'],
                 'locum_year'           => $selYearNum,
 
                 'hours_per_locum'      => null,
 
                 'number_of_days'       => $eligibleDaysCount,
-                'total_hours'          => $eligibleHoursSum,
+                'total_hours'          => $totalHoursClaimed,
                 'grand_total_locums'   => (int)($perShiftBreakdown['grand']['locums'] ?? 0),
                 'total_amount'         => (float)($perShiftBreakdown['grand']['amount'] ?? 0),
                 'total_amount_payable' => (float)($perShiftBreakdown['grand']['amount'] ?? 0),
 
                 'per_shift_breakdown'  => $perShiftBreakdown,
                 'worked_days'          => $validated['worked_days'],
-                'description'          => $request->input('description'),
+                'description'          => $validated['description'] ?? null,
                 'unit_ids'             => !empty($distinctUnitIds) ? array_values(array_filter($distinctUnitIds)) : [],
                 'platform_ids'         => !empty($distinctPlatformIds) ? array_values(array_filter($distinctPlatformIds)) : [],
                 'approval_flow'        => $approvalFlowLabel,
@@ -2210,10 +2801,14 @@ class       LocumRequestController extends Controller
                 }
             } elseif ($isLineManager) {
                 // Line Manager requests: Skip In-Charge, Platform Manager, and Line Manager steps, go directly to HEC
+                // IMPORTANT: Line managers should NEVER approve their own requests - always route to HEC directly
                 $dept = $user->department;
+
+                // Exclude the line manager from being selected as HEC approver (in case they're also a HEC member)
                 $hecApprover = $this->resolveHecApproverForDept($dept, [$user->id]);
 
-                if ($hecApprover) {
+                if ($hecApprover && $hecApprover->id !== $user->id) {
+                    // Route directly to HEC member (skip all intermediate steps including Line Manager approval)
                     \App\Models\WorkFlowHistory::create([
                         'work_flow_id'         => $workflow->id,
                         'forwarded_by'         => $user->id,
@@ -2221,13 +2816,14 @@ class       LocumRequestController extends Controller
                         'step_name'            => 'HEC Approval',
                         'action_taken'         => 'Forwarded',
                         'status'               => 0,
-                        'remark'               => 'Line Manager request - Awaiting HEC approval.',
+                        'remark'               => 'Line Manager request - Awaiting HEC approval (skipped Line Manager approval step).',
                         'locum_request_status' => 4, // HEC stage
                     ]);
                 } else {
-                    // No HEC: go to HR
+                    // No HEC or HEC is the same as requester: go to HR
                     $hr = \App\Models\User::whereHas('roles', fn($q) => $q->where('name', 'hr'))
                         ->when(\Schema::hasColumn('users', 'approvelocum'), fn($qq) => $qq->where('approvelocum', 1))
+                        ->where('id', '!=', $user->id) // Ensure HR is not the line manager themselves
                         ->first();
 
                     if (!$hr) {
@@ -2244,7 +2840,7 @@ class       LocumRequestController extends Controller
                         'step_name'            => 'HR Approval',
                         'action_taken'         => 'Forwarded',
                         'status'               => 0,
-                        'remark'               => 'Line Manager request - Awaiting HR approval (no HEC configured).',
+                        'remark'               => 'Line Manager request - Awaiting HR approval (no HEC configured, skipped Line Manager approval step).',
                         'locum_request_status' => 5,
                     ]);
                 }
@@ -2310,41 +2906,86 @@ class       LocumRequestController extends Controller
                     ]);
                 } else {
                     // Starts with Line Manager (Standard or Three-Level)
-                    $lm = $resolveLM((int) $user->deptId);
-                    if ($lm) {
-                        \App\Models\WorkFlowHistory::create([
-                            'work_flow_id'         => $workflow->id,
-                            'forwarded_by'         => $user->id,
-                            'attended_by'          => $lm->id,
-                            'step_name'            => 'Line Manager Approval',
-                            'action_taken'         => 'Forwarded',
-                            'status'               => 0,
-                            'remark'               => 'Awaiting Line Manager approval.',
-                            'locum_request_status' => 3, // LM stage
-                        ]);
-                    } else {
-                        // No LM: seed HR directly
-                        $hr = \App\Models\User::whereHas('roles', fn($q) => $q->where('name', 'hr'))
-                            ->when(\Schema::hasColumn('users', 'approvelocum'), fn($qq) => $qq->where('approvelocum', 1))
-                            ->first();
+                    // IMPORTANT: If requester is a line manager, skip Line Manager approval and go to HEC
+                    if ($isLineManager) {
+                        // Line manager creating request - should have been caught earlier, but as safeguard, route to HEC
+                        $dept = $user->department;
+                        $hecApprover = $this->resolveHecApproverForDept($dept, [$user->id]);
 
-                        if (!$hr) {
-                            \DB::rollBack();
-                            return back()->withErrors([
-                                'worked_days' => 'No Line Manager or HR approver configured for your department.'
-                            ])->withInput();
+                        if ($hecApprover && $hecApprover->id !== $user->id) {
+                            \App\Models\WorkFlowHistory::create([
+                                'work_flow_id'         => $workflow->id,
+                                'forwarded_by'         => $user->id,
+                                'attended_by'          => $hecApprover->id,
+                                'step_name'            => 'HEC Approval',
+                                'action_taken'         => 'Forwarded',
+                                'status'               => 0,
+                                'remark'               => 'Line Manager request - Awaiting HEC approval (safeguard: skipped Line Manager approval).',
+                                'locum_request_status' => 4, // HEC stage
+                            ]);
+                        } else {
+                            // No HEC: go to HR
+                            $hr = \App\Models\User::whereHas('roles', fn($q) => $q->where('name', 'hr'))
+                                ->when(\Schema::hasColumn('users', 'approvelocum'), fn($qq) => $qq->where('approvelocum', 1))
+                                ->where('id', '!=', $user->id)
+                                ->first();
+
+                            if ($hr) {
+                                \App\Models\WorkFlowHistory::create([
+                                    'work_flow_id'         => $workflow->id,
+                                    'forwarded_by'         => $user->id,
+                                    'attended_by'          => $hr->id,
+                                    'step_name'            => 'HR Approval',
+                                    'action_taken'         => 'Forwarded',
+                                    'status'               => 0,
+                                    'remark'               => 'Line Manager request - Awaiting HR approval (safeguard: no HEC, skipped Line Manager approval).',
+                                    'locum_request_status' => 5,
+                                ]);
+                            } else {
+                                \DB::rollBack();
+                                return back()->withErrors([
+                                    'worked_days' => 'No HEC member or HR approver configured for your department.'
+                                ])->withInput();
+                            }
                         }
+                    } else {
+                        // Normal user: route to Line Manager
+                        $lm = $resolveLM((int) $user->deptId);
+                        if ($lm && $lm->id !== $user->id) {
+                            \App\Models\WorkFlowHistory::create([
+                                'work_flow_id'         => $workflow->id,
+                                'forwarded_by'         => $user->id,
+                                'attended_by'          => $lm->id,
+                                'step_name'            => 'Line Manager Approval',
+                                'action_taken'         => 'Forwarded',
+                                'status'               => 0,
+                                'remark'               => 'Awaiting Line Manager approval.',
+                                'locum_request_status' => 3, // LM stage
+                            ]);
+                        } else {
+                            // No LM: seed HR directly
+                            $hr = \App\Models\User::whereHas('roles', fn($q) => $q->where('name', 'hr'))
+                                ->when(\Schema::hasColumn('users', 'approvelocum'), fn($qq) => $qq->where('approvelocum', 1))
+                                ->first();
 
-                        \App\Models\WorkFlowHistory::create([
-                            'work_flow_id'         => $workflow->id,
-                            'forwarded_by'         => $user->id,
-                            'attended_by'          => $hr->id,
-                            'step_name'            => 'HR Approval',
-                            'action_taken'         => 'Forwarded',
-                            'status'               => 0,
-                            'remark'               => 'Awaiting HR approval (no LM configured).',
-                            'locum_request_status' => 5,
-                        ]);
+                            if (!$hr) {
+                                \DB::rollBack();
+                                return back()->withErrors([
+                                    'worked_days' => 'No Line Manager or HR approver configured for your department.'
+                                ])->withInput();
+                            }
+
+                            \App\Models\WorkFlowHistory::create([
+                                'work_flow_id'         => $workflow->id,
+                                'forwarded_by'         => $user->id,
+                                'attended_by'          => $hr->id,
+                                'step_name'            => 'HR Approval',
+                                'action_taken'         => 'Forwarded',
+                                'status'               => 0,
+                                'remark'               => 'Awaiting HR approval (no LM configured).',
+                                'locum_request_status' => 5,
+                            ]);
+                        }
                     }
                 }
             }
@@ -2423,7 +3064,7 @@ class       LocumRequestController extends Controller
             return redirect()->route('locum-requests.create')->with('error', 'Only incharge users can claim locum for staff.');
         }
 
-        // Only users in this in-charge's department WITH an active approved agreement
+        // Only users in this in-charge's department WITH an active HR-approved agreement (status = 2)
         $users = User::where('deptId', $user->deptId)
             ->whereHas('locumAgreements', function ($query) {
                 $query->where('has_contract', true)
@@ -2431,7 +3072,7 @@ class       LocumRequestController extends Controller
                     ->where(function ($q) {
                         $q->whereNull('end_date')->orWhere('end_date', '>=', now());
                     })
-                    ->where('status', '!=', 'Pending');
+                    ->where('status', 2); // Only HR-approved agreements
             })
             ->with(['locumAgreements' => function ($query) {
                 $query->where('has_contract', true)
@@ -2439,13 +3080,13 @@ class       LocumRequestController extends Controller
                     ->where(function ($q) {
                         $q->whereNull('end_date')->orWhere('end_date', '>=', now());
                     })
-                    ->where('status', '!=', 'Pending')
+                    ->where('status', 2) // Only HR-approved agreements
                     ->orderByDesc('created_at');
             }])
             ->get();
 
         if ($users->isEmpty()) {
-            return redirect()->route('locum-requests.index')->with('error', 'No users with active locum agreements found in your department.');
+            return redirect()->route('locum-requests.index')->with('error', 'No users with active HR-approved locum agreements found in your department. Only HR-approved agreements can be used for locum requests.');
         }
 
         // Last 12 months including current, e.g. "September 2025"
@@ -2577,29 +3218,31 @@ class       LocumRequestController extends Controller
 
         Log::info('Calculated values:', ['totalDays' => $totalDays, 'totalHours' => $totalHours]);
 
-        // Ensure staff has an active approved agreement (final guard)
+        // Ensure staff has an active HR-approved agreement (status = 2) - final guard
         $agreement = LocumAgreement::where('user_id', $validated['user_id'])
             ->where('has_contract', true)
             ->whereNull('rejection_status')
             ->where(function ($query) {
                 $query->whereNull('end_date')->orWhere('end_date', '>=', now());
             })
-            ->where('status', '!=', 'Pending')
+            ->where('status', 2) // Only HR-approved agreements can be used
             ->orderByDesc('created_at')
             ->first();
 
         if (!$agreement) {
-            return back()->withErrors(['user_id' => 'No active locum agreement found for the selected staff.']);
+            return back()->withErrors(['user_id' => 'The selected staff member does not have an active HR-approved locum agreement. Only agreements approved by HR can be used for locum requests.']);
         }
 
 
         // Education-level sensitive amount (rate × multiplier × claimed days)
         $educationMultiplier = (float) ($agreement->education_multiplier ?? 1.0);
-        $totalAmount = $totalDays * (float) $agreement->locum_rate * $educationMultiplier;
+        $rateUsed = (float) $agreement->locum_rate; // Store the rate used at creation time
+        $totalAmount = $totalDays * $rateUsed * $educationMultiplier;
 
         $locumRequest = LocumRequest::create([
             'user_id'              => $validated['user_id'],
             'locum_agreement_id'   => $agreement->id,
+            'rate_used'            => $rateUsed, // Store the rate used at creation time (for rejected claims)
             'locum_month'          => $targetMonth,
             'locum_year'           => $targetYear,
             'number_of_days'       => $totalDays,
@@ -3932,12 +4575,12 @@ class       LocumRequestController extends Controller
             'COO' => 'coo',
             'CFO' => 'cfo',
             'CMS' => 'cms',
-            'CRHDO' => 'crhdo',
+            'CCDRO' => 'ccdro',
             // Lowercase variants
             'coo' => 'coo',
             'cfo' => 'cfo',
             'cms' => 'cms',
-            'crhdo' => 'crhdo',
+            'ccdro' => 'ccdro',
             // Friendly variants
             'chief operating officer'  => 'coo',
             'chief financial officer'  => 'cfo',
@@ -4041,9 +4684,29 @@ class       LocumRequestController extends Controller
             }
         }
 
-        // You may allow resubmission even if the agreement is expired,
-        // but if you still want to warn/show current agreement, fetch latest:
-        $agreement = LocumAgreement::where('user_id', $userId)->latest()->first();
+        // Get the most recent HR-approved agreement (status = 2)
+        // Order by updated_at DESC to get the most recently approved agreement by HR
+        // If there's a newer agreement that's not HR-approved yet, use the previous HR-approved one
+        $today = \Carbon\Carbon::today();
+        $agreement = LocumAgreement::where('user_id', $userId)
+            ->where('status', 2) // Only HR-approved agreements
+            ->where(function($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->orderByDesc('updated_at') // Most recently approved by HR
+            ->orderByDesc('created_at') // Fallback to creation date
+            ->first();
+
+        // If no active HR-approved agreement, get the most recent HR-approved one (even if expired)
+        // This allows editing rejected claims even if the agreement expired
+        if (!$agreement) {
+            $agreement = LocumAgreement::where('user_id', $userId)
+                ->where('status', 2) // Only HR-approved agreements
+                ->orderByDesc('updated_at') // Most recently approved by HR
+                ->orderByDesc('created_at') // Fallback to creation date
+                ->first();
+        }
 
         // Get the same data as create method for consistency
         $selectedMonth = $locumRequest->locum_month;
@@ -4181,7 +4844,7 @@ class       LocumRequestController extends Controller
                 'November',
                 'December'
             ])],
-            'locum_year'                    => ['nullable', 'integer', 'min:2000', 'max:2100'],
+            'locum_year'                    => ['required', 'integer', 'min:2000', 'max:2100'],
             'worked_days'                   => ['required', 'array'],
             'worked_days.*.worked'          => ['nullable', 'boolean'],
             // entries per worked day
@@ -4196,23 +4859,25 @@ class       LocumRequestController extends Controller
         $tz = 'Africa/Dar_es_Salaam';
         $now = \Carbon\Carbon::now($tz);
 
-        // Resolve target year
-        $selectedIsos = array_keys(array_filter(
-            $validated['worked_days'] ?? [],
-            fn($r) => (isset($r['worked']) && (int)$r['worked'] === 1)
-        ));
-        if (empty($validated['locum_year']) && !empty($selectedIsos)) {
-            try {
-                $firstPicked = \Carbon\Carbon::createFromFormat('Y-m-d', $selectedIsos[0], $tz);
-                $targetYear  = (int)$firstPicked->year;
-            } catch (\Throwable $e) {
-                $targetYear  = (int)$now->copy()->subMonth()->year;
-            }
-        } else {
-            $targetYear = $validated['locum_year']
-                ? (int)$validated['locum_year']
-                : (int)$now->copy()->subMonth()->year;
+        // Validate month selection - prevent future months
+        $selectedMonth = $validated['locum_month'];
+        $selectedYear = (int)$validated['locum_year'];
+        $monthIndex = array_search($selectedMonth, [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ]);
+        $selectedDate = \Carbon\Carbon::create($selectedYear, $monthIndex + 1, 1, 0, 0, 0, $tz);
+        $currentMonthStart = $now->copy()->startOfMonth();
+
+        // Prevent claiming for future months
+        if ($selectedDate->gt($currentMonthStart)) {
+            return redirect()->back()
+                ->withInput()
+                ->withErrors(['locum_month' => 'You cannot claim for future months. Please select a month that has already passed.']);
         }
+
+        // Resolve target year
+        $targetYear = $selectedYear;
 
         // Lock month & year
         try {
@@ -4224,8 +4889,42 @@ class       LocumRequestController extends Controller
         $selYearNum  = (int) $targetMonthCarbon->format('Y');
 
         // Agreement + rate
-        $agreement = $locumRequest->locumAgreement ?: LocumAgreement::where('user_id', $user->id)->latest()->firstOrFail();
-        $rate      = (float) ($agreement->locum_rate ?? 0);
+        // For rejected claims being edited, use the stored rate_used (preserves old rate)
+        // For new claims, use the most recent HR-approved agreement rate
+        // Always get the most recent HR-approved agreement (status = 2)
+        // Order by updated_at DESC to get the most recently approved agreement by HR
+        $today = \Carbon\Carbon::today();
+        $agreement = LocumAgreement::where('user_id', $user->id)
+            ->where('status', 2) // Only HR-approved agreements
+            ->where(function($q) use ($today) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $today);
+            })
+            ->orderByDesc('updated_at') // Most recently approved by HR
+            ->orderByDesc('created_at') // Fallback to creation date
+            ->first();
+
+        // If no active HR-approved agreement, get the most recent HR-approved one (even if expired)
+        if (!$agreement) {
+            $agreement = LocumAgreement::where('user_id', $user->id)
+                ->where('status', 2) // Only HR-approved agreements
+                ->orderByDesc('updated_at') // Most recently approved by HR
+                ->orderByDesc('created_at') // Fallback to creation date
+                ->first();
+        }
+
+        if (!$agreement) {
+            return back()->withErrors(['locum_agreement_id' => 'You must have an HR-approved locum agreement to resubmit this request. Only agreements approved by HR can be used.'])->withInput();
+        }
+
+        // Use the stored rate_used for rejected claims (preserves old rate), otherwise use current agreement rate
+        $rate = $locumRequest->rate_used ?? (float) ($agreement->locum_rate ?? 0);
+
+        // If rate_used is not set (legacy data), use agreement rate but store it for future edits
+        if (!$locumRequest->rate_used) {
+            $locumRequest->rate_used = $rate;
+            $locumRequest->save();
+        }
 
         // Normalize & validate selected entries (must be inside locked month/year)
         $rows = []; // each = {date, shift_id, platform_id, unit_id, hours}
@@ -4418,10 +5117,23 @@ class       LocumRequestController extends Controller
         $perShiftBreakdown['grand']['amount']      = round($grandLocums * $rate, 2);
         $perShiftBreakdown['grand']['remainder']   = round($grandRemainderHours, 2);
 
-        // "Eligible days" (optional)
+        // "Eligible days" - Group by date first, then check if total hours per day meet requirement
         $eligibleDaysCount = 0;
         $eligibleHoursSum  = 0.0;
+
+        // Group entries by date
+        $hoursByDate = [];
         foreach ($rows as $r) {
+            $dateKey = $r['iso_date'];
+            if (!isset($hoursByDate[$dateKey])) {
+                $hoursByDate[$dateKey] = [
+                    'total_hours' => 0.0,
+                    'platforms' => []
+                ];
+            }
+            $hoursByDate[$dateKey]['total_hours'] += $r['hours'];
+
+            // Track platform requirements for this date
             $pid = $r['platform_id'];
             $uid = $r['unit_id'] ?? null;
             $req = (int) ($uid && isset($unitHours[$uid]) && $unitHours[$uid]
@@ -4430,12 +5142,38 @@ class       LocumRequestController extends Controller
             if ($req <= 0) {
                 $req = 8;
             }
-            if ($r['hours'] >= $req) {
+            if (!isset($hoursByDate[$dateKey]['platforms'][$pid])) {
+                $hoursByDate[$dateKey]['platforms'][$pid] = [
+                    'required' => $req,
+                    'hours' => 0.0
+                ];
+            }
+            $hoursByDate[$dateKey]['platforms'][$pid]['hours'] += $r['hours'];
+        }
+
+        // Count eligible days: a day is eligible if at least one platform on that day meets its requirement
+        foreach ($hoursByDate as $dateKey => $dateData) {
+            $dayIsEligible = false;
+            $dayTotalHours = 0.0;
+
+            foreach ($dateData['platforms'] as $pid => $platData) {
+                $dayTotalHours += $platData['hours'];
+                // Day is eligible if any platform on that day meets its requirement
+                if ($platData['hours'] >= $platData['required']) {
+                    $dayIsEligible = true;
+                }
+            }
+
+            if ($dayIsEligible) {
                 $eligibleDaysCount += 1;
-                $eligibleHoursSum  += $r['hours'];
+                $eligibleHoursSum += $dayTotalHours;
             }
         }
         $eligibleHoursSum = round($eligibleHoursSum, 2);
+
+        // Use grand total hours (all hours claimed) instead of eligible hours for total_hours
+        // This ensures consistency between the summary table and the approver view
+        $totalHoursClaimed = round($grandHours, 2);
 
         // Distinct ids actually selected
         $distinctUnitIds     = collect($rows)->pluck('unit_id')->filter()->unique()->values()->all();
@@ -4450,7 +5188,7 @@ class       LocumRequestController extends Controller
                 'locum_month'           => $validated['locum_month'],
                 'locum_year'            => $selYearNum,
                 'number_of_days'        => $eligibleDaysCount,
-                'total_hours'           => $eligibleHoursSum,
+                'total_hours'           => $totalHoursClaimed,
                 'grand_total_locums'     => (int)$perShiftBreakdown['grand']['locums'],
                 'total_amount'          => (float)$perShiftBreakdown['grand']['amount'],
                 'total_amount_payable'  => (float)$perShiftBreakdown['grand']['amount'],

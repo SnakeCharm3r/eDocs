@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Platform extends Model
 {
-    protected $fillable = ['name', 'description', 'manager_user_id']; // include if you use mass-assign
+    protected $fillable = ['name', 'description', 'manager_user_id', 'locum_hours']; // include if you use mass-assign
 
     public function departments()
     {

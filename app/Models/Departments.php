@@ -62,7 +62,7 @@ class Departments extends Model
      */
     public function recruitmentRequisitions()
     {
-        return $this->hasMany(RecruitmentRequisition::class, 'department_id');
+        return $this->hasMany(Requisition::class, 'department_id');
     }
 
     public function jobDescriptions()
@@ -77,6 +77,15 @@ class Departments extends Model
     {
         return $this->belongsToMany(DepartmentPolicy::class, 'department_policy_department', 'department_id', 'department_policy_id', 'policy_id');
     }
+
+    /**
+     * Department policies (line manager managed, PDF only) - one department per policy
+     */
+    public function lineManagerPolicies()
+    {
+        return $this->hasMany(DepartmentPolicy::class, 'department_id');
+    }
+
     public function policies()
     {
         return $this->belongsToMany(DepartmentPolicy::class, 'department_policy_department');
@@ -96,7 +105,7 @@ class Departments extends Model
     {
         return $this->hasOne(User::class, 'deptId')
             ->whereHas('roles', function ($q) {
-                $q->where('name', 'line-manager');
+                $q->whereIn('name', ['line-manager', 'acting-line-manager']);
             });
     }
     // public function platforms()
@@ -126,5 +135,10 @@ class Departments extends Model
     public function jobTitles()
     {
         return $this->hasMany(JobTitle::class, 'deptId');
+    }
+
+    public function staffKpis()
+    {
+        return $this->hasMany(\App\Models\Performance\StaffKpi::class, 'department_id');
     }
 }

@@ -104,6 +104,22 @@
             .mt-3 {
                 margin-top: 20px;
             }
+
+            @media print {
+                .header, .footer, .fixed-bottom,
+                .page-header, .page-sub-header,
+                .btn, button, .action-buttons,
+                #loader, .loader, .swal2-container,
+                nav, .navbar, .no-print { display: none !important; }
+
+                body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+                .content-wrapper { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+                * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+                @page { size: A4 portrait; margin: 10mm; }
+                table { page-break-inside: auto; }
+                tr { page-break-inside: avoid; }
+                img { max-width: 100% !important; }
+            }
         </style>
 
         <!-- Page Header -->
@@ -232,17 +248,23 @@
 
         <!-- HR Confirmation Section -->
         <div class="section">
-            <h5>HR Confirmation</h5>
+            <h5>HR Confirmation
+                @if ($isApproved)
+                    <span class="badge bg-success text-white ms-2" style="font-size: 0.8rem;">Approved</span>
+                @else
+                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.8rem;">Pending</span>
+                @endif
+            </h5>
             <table class="form-table">
                 <tbody>
                     <tr>
                         <td>HR Officer Name:</td>
-                        <td>{{ trim(($HrToApprove->fname ?? '') . ' ' . ($HrToApprove->lname ?? '')) }}</td>
+                        <td>{{ $HrToApprove ? trim(($HrToApprove->fname ?? '') . ' ' . ($HrToApprove->lname ?? '')) : '' }}</td>
                     </tr>
                     <tr>
                         <td>HR Signature:</td>
                         <td>
-                            @if ($HrToApprove)
+                            @if ($HrToApprove && $HrToApprove->signature)
                                 <img src="data:image/png;base64,{{ $HrToApprove->signature }}" alt="HR Officer Signature"
                                     style="max-width: 100px; height: auto;">
                             @else
@@ -253,42 +275,8 @@
                     <tr>
                         <td>Date:</td>
                         <td>
-                            @if ($idForm->status == 0 && $HrToApprove && $HrToApprove->updated_at)
+                            @if ($HrToApprove && $HrToApprove->updated_at)
                                 {{ \Carbon\Carbon::parse($HrToApprove->updated_at)->format('d F Y') }}
-                            @elseif ($idForm->status == 1 && $HrToApprove && $HrToApprove->updated_at)
-                                {{ \Carbon\Carbon::parse($HrToApprove->updated_at)->format('d F Y') }}
-                            @endif
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-        <div class="section">
-            <h5>IT Confirmation </h5>
-            <table class="form-table">
-                <tbody>
-                    <tr>
-                        <td>IT Officer Name:</td>
-                        <td>{{ trim(($ItToApprove->fname ?? '') . ' ' . ($ItToApprove->lname ?? '')) }}</td>
-                    </tr>
-                    <tr>
-                        <td>IT Signature:</td>
-                        <td>
-                            @if ($ItToApprove)
-                                <img src="data:image/png;base64,{{ $ItToApprove->signature }}" alt="HR Officer Signature"
-                                    style="max-width: 100px; height: auto;">
-                            @else
-                                <span>No Signature</span>
-                            @endif
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>Date:</td>
-                        <td>
-                            @if ($idForm->status == 0 && $ItToApprove && $ItToApprove->updated_at)
-                                {{ \Carbon\Carbon::parse($ItToApprove->updated_at)->format('d F Y') }}
-                            @elseif ($idForm->status == 1 && $ItToApprove && $ItToApprove->updated_at)
-                                {{ \Carbon\Carbon::parse($ItToApprove->updated_at)->format('d F Y') }}
                             @endif
                         </td>
                     </tr>
@@ -300,14 +288,59 @@
         <div class="mt-3 d-flex justify-content-start">
             <button type="button" class="btn btn-secondary action-buttons me-2"
                 onclick="window.history.back()">Back</button>
-            <button type="button" class="btn btn-success action-buttons me-2"
-                onclick="approveIdForm('{{ $idForm->access_id }}')">Confirm</button>
-            <button type="button" class="btn btn-danger action-buttons"
-                onclick="rejectIdForm('{{ $idForm->access_id }}')">Reject</button>
+            @if ($isApproved)
+                <button type="button" class="btn btn-primary action-buttons me-2" onclick="generatePDF()">Download</button>
+            @endif
+            @if (!$isApproved && Auth::user()->hasRole('hr'))
+                <button type="button" class="btn btn-success action-buttons me-2"
+                    onclick="approveIdForm('{{ $idForm->access_id }}')">Confirm</button>
+                <button type="button" class="btn btn-danger action-buttons"
+                    onclick="rejectIdForm('{{ $idForm->access_id }}')">Reject</button>
+            @endif
         </div>
         <br>
     </div>
     <br>
+
+    <!-- Load html2pdf library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script>
+        function generatePDF() {
+            const element = document.querySelector('.content.container-fluid');
+            const buttons = document.querySelector('.mt-3.d-flex');
+
+            // Hide buttons during PDF generation
+            if (buttons) buttons.style.display = 'none';
+
+            window.scrollTo(0, 0);
+
+            const options = {
+                margin: [2, 1, 1, 2],
+                filename: 'ID_Card_Form.pdf',
+                image: {
+                    type: 'jpeg',
+                    quality: 0.98
+                },
+                html2canvas: {
+                    scale: 2,
+                    scrollX: 0,
+                    scrollY: 0
+                },
+                jsPDF: {
+                    unit: 'mm',
+                    format: 'a4',
+                    orientation: 'portrait',
+                    putOnlyUsedFonts: true,
+                    compress: true
+                }
+            };
+
+            html2pdf().from(element).set(options).save().then(() => {
+                // Show buttons again after PDF generation
+                if (buttons) buttons.style.display = 'flex';
+            });
+        }
+    </script>
 @endsection
 
 <script>

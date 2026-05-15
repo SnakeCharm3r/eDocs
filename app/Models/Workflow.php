@@ -25,6 +25,7 @@ class Workflow extends Model
         'ccbrt_contract_id',
         'contract_renewal_id',
         'change_request_id',
+        'night_shift_claim_id',
     ];
     public function user()
     {
@@ -67,5 +68,15 @@ class Workflow extends Model
     public function locumAgreement()
     {
         return $this->belongsTo(LocumAgreement::class, 'locum_agreement_id');
+    }
+
+    public function requisition()
+    {
+        return $this->belongsTo(Requisition::class, 'requisition_id');
+    }
+
+    public function nightShiftClaim()
+    {
+        return $this->belongsTo(NightShiftClaim::class, 'night_shift_claim_id');
     }
 }

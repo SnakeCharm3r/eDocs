@@ -94,10 +94,6 @@
             accent-color: #2fb565
         }
 
-        #locum_month {
-            pointer-events: none;
-            background-color: #e9ecef
-        }
 
         .btn-primary {
             background-color: #2fb565;
@@ -263,7 +259,6 @@
                         @csrf
                         @method('PUT')
                         <input type="hidden" name="locum_agreement_id" value="{{ $agreement->id }}">
-                        <input type="hidden" id="locum_year" name="locum_year" value="{{ $selectedYear }}">
 
                         {{-- EMPLOYEE DETAILS --}}
                         <div class="pdf-section">
@@ -297,9 +292,25 @@
                         {{-- REQUEST DETAILS --}}
                         <div class="pdf-section">
                             <table class="request-table table table-bordered">
-                                {{-- Locum Month --}}
+                                {{-- Year and Month Selection in Same Row --}}
                                 <tr>
-                                    <td colspan="2">
+                                    <td style="width: 50%;">
+                                        <label for="locum_year"
+                                            class="form-label fw-semibold small text-uppercase d-block mb-1">
+                                            Year <span class="text-danger">*</span>
+                                        </label>
+                                        <select class="form-control" id="locum_year" name="locum_year" required>
+                                            @for($y = date('Y') - 2; $y <= date('Y') + 1; $y++)
+                                                <option value="{{ $y }}" @selected($y == $selectedYear)>
+                                                    {{ $y }}
+                                                </option>
+                                            @endfor
+                                        </select>
+                                        @error('locum_year')
+                                            <div class="invalid-feedback d-block">{{ $message }}</div>
+                                        @enderror
+                                    </td>
+                                    <td style="width: 50%;">
                                         <label for="locum_month"
                                             class="form-label fw-semibold small text-uppercase d-block mb-1">
                                             Locum Month <span class="text-danger">*</span>
@@ -307,7 +318,8 @@
                                         <select class="form-control" id="locum_month" name="locum_month" required>
                                             @foreach ($months as $m)
                                                 <option value="{{ $m }}" @selected($m === $selectedMonth)>
-                                                    {{ $m }} {{ $selectedYear }}</option>
+                                                    {{ $m }}
+                                                </option>
                                             @endforeach
                                         </select>
                                         @error('locum_month')
@@ -459,6 +471,7 @@
             // ----- Elements -----
             const monthEl = document.getElementById('locum_month');
             const yearInput = document.getElementById('locum_year');
+            const yearEl = yearInput; // Alias for consistency
             const daysWrap = document.getElementById('days-selection');
             const tbody = document.getElementById('days-table-body');
             const form = document.getElementById('locum-request-form');
@@ -557,8 +570,27 @@
                 tr.className = holiday ? 'holiday' : (isWeekend ? 'weekend' : '');
                 tr.dataset.iso = iso;
 
-                // Check if this day has existing data
-                const existingDay = existingWorkedDays[iso] || null;
+                // Check if this day has existing data (only use if it matches current selected month/year)
+                // Filter existingWorkedDays to only include dates in the selected month/year
+                const selectedMonth = monthEl.value;
+                const selectedYear = parseInt(yearEl.value);
+                const selectedMonthIdx = validMonths.indexOf(selectedMonth);
+                let existingDay = null;
+                
+                if (existingWorkedDays[iso]) {
+                    try {
+                        const dateObj = new Date(iso + 'T00:00:00');
+                        const dateYear = dateObj.getFullYear();
+                        const dateMonth = dateObj.getMonth(); // 0-based
+                        
+                        // Only use existing data if it matches the selected month/year
+                        if (dateYear === selectedYear && dateMonth === selectedMonthIdx) {
+                            existingDay = existingWorkedDays[iso];
+                        }
+                    } catch (e) {
+                        // Skip invalid dates
+                    }
+                }
                 const wasWorked = existingDay && (String(existingDay.worked ?? '0') === '1' || (Array.isArray(
                     existingDay.entries) && existingDay.entries.length > 0));
                 const existingEntries = Array.isArray(existingDay?.entries) ? existingDay.entries : [];
@@ -987,9 +1019,65 @@
                 }
             }
 
+            // Check if selected month/year is a previous month or future month
+            function checkIfPreviousMonth() {
+                const selectedMonth = monthEl.value;
+                const selectedYear = parseInt(yearEl.value);
+                const currentDate = new Date();
+                const currentYear = currentDate.getFullYear();
+                const currentMonth = currentDate.getMonth(); // 0-based (0 = January)
+                
+                const monthIndex = validMonths.indexOf(selectedMonth);
+                const selectedDate = new Date(selectedYear, monthIndex, 1);
+                const currentMonthStart = new Date(currentYear, currentMonth, 1);
+                
+                // Check if selected date is before current month (previous month)
+                const isPreviousMonth = selectedDate < currentMonthStart;
+                
+                // Check if selected date is in the future (future month)
+                const isFutureMonth = selectedDate > currentMonthStart;
+                
+                // Show error if trying to claim for future month
+                if (isFutureMonth) {
+                    if (typeof Swal !== 'undefined' && typeof Swal.fire === 'function') {
+                        Swal.fire({
+                            icon: 'warning',
+                            title: 'Invalid Month Selection',
+                            text: 'You cannot claim for future months.',
+                            confirmButtonText: 'OK',
+                            confirmButtonColor: '#007A33',
+                            allowOutsideClick: false,
+                            allowEscapeKey: false
+                        }).then(() => {
+                            // Reset to previous month after user clicks OK
+                            const prev = new Date(currentYear, currentMonth - 1, 1);
+                            yearEl.value = prev.getFullYear();
+                            monthEl.value = validMonths[prev.getMonth()];
+                            buildCalendar();
+                        });
+                    } else {
+                        // Fallback to alert if Swal is not available
+                        alert('Invalid Month Selection\n\nYou cannot claim for future months.');
+                        const prev = new Date(currentYear, currentMonth - 1, 1);
+                        yearEl.value = prev.getFullYear();
+                        monthEl.value = validMonths[prev.getMonth()];
+                        buildCalendar();
+                    }
+                    return;
+                }
+            }
+
             // Init + listeners
             buildCalendar();
-            monthEl.addEventListener('change', buildCalendar);
+            checkIfPreviousMonth();
+            monthEl.addEventListener('change', function() {
+                checkIfPreviousMonth();
+                buildCalendar();
+            });
+            yearEl.addEventListener('change', function() {
+                checkIfPreviousMonth();
+                buildCalendar();
+            });
 
             // Submit guard
             form.addEventListener('submit', function(e) {

@@ -25,6 +25,7 @@ use App\Mail\ContractRenewalCreated;
 use App\Mail\ReportMail;
 use App\Mail\ContractsReport;
 use App\Mail\ContractReminderMail;
+use App\Models\ContractNotificationLog;
 use Illuminate\Support\Facades\Artisan;
 
 class ContractsController extends Controller
@@ -48,13 +49,13 @@ class ContractsController extends Controller
             return array_values(array_unique(array_filter($own)));
         }
 
-        // HEC roles (COO/CFO/CMS/CRHDO): see departments mapped to their HEC level
-        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo'])) {
+        // HEC roles (COO/CFO/CMS/CCDRO): see departments mapped to their HEC level
+        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             $roleToHec = [];
             if ($user->hasRole('coo')) $roleToHec[] = 'COO';
             if ($user->hasRole('cfo')) $roleToHec[] = 'CFO';
             if ($user->hasRole('cms')) $roleToHec[] = 'CMS';
-            if ($user->hasRole('crhdo')) $roleToHec[] = 'CRHDO';
+            if ($user->hasRole('ccdro')) $roleToHec[] = 'CCDRO';
 
             return Departments::query()
                 ->join('hecs', 'departments.hec_id', '=', 'hecs.id')
@@ -90,12 +91,16 @@ class ContractsController extends Controller
 
         $contractsQuery = CcbrtContract::with($relationships);
 
-        // COO can view all contracts (no department filter)
-        if ($user->hasRole('coo')) {
+        // Users with manage_contracts permission see ALL contracts regardless of role
+        if ($user->can('manage_contracts')) {
             // No filter - show all contracts
         }
-        // Apply department filter if user is Line Manager or other HEC members (CFO, CMS, CRHDO)
-        elseif ($user->hasRole('line-manager') || $user->hasAnyRole(['cfo', 'cms', 'crhdo'])) {
+        // COO can view all contracts (no department filter)
+        elseif ($user->hasRole('coo')) {
+            // No filter - show all contracts
+        }
+        // Apply department filter if user is Line Manager or other HEC members (CFO, CMS, CCDRO)
+        elseif ($user->hasRole('line-manager') || $user->hasAnyRole(['cfo', 'cms', 'ccdro'])) {
             if (!empty($allowedDepartmentIds)) {
                 $contractsQuery->whereIn('department_id', $allowedDepartmentIds);
             } else {
@@ -110,13 +115,24 @@ class ContractsController extends Controller
         $soonToExpire = $today->copy()->addDays(30);
 
         // Filter contracts by status and end_date
-        // First, identify expired contracts: either status is 'expired' OR end_date is in the past
+        // First, identify expired contracts: either status is 'expired' OR end_date is in the past (exclude archived)
         $expiredContractIds = $contracts->filter(function ($contract) use ($today) {
-            // Check if status is explicitly 'expired'
+            if ($contract->is_archived ?? false) {
+                return false;
+            }
+            // Exclude if already renewed (has child renewal contracts or renewed status)
+            if (strtolower($contract->status ?? '') === 'renewed') {
+                return false;
+            }
+            if (strtolower($contract->renewal_status ?? '') === 'renewed') {
+                return false;
+            }
+            if (isset($contract->renewals) && $contract->renewals->count() > 0) {
+                return false;
+            }
             if (strtolower($contract->status ?? '') === 'expired') {
                 return true;
             }
-            // Or check if end_date is in the past
             if ($contract->end_date) {
                 return Carbon::parse($contract->end_date)->lt($today);
             }
@@ -127,10 +143,29 @@ class ContractsController extends Controller
             return in_array($contract->id, $expiredContractIds);
         });
 
+        // Archived (filed) contracts: kept for record-keeping
+        $archivedContracts = $contracts->filter(function ($contract) {
+            return (bool) ($contract->is_archived ?? false);
+        });
+        $archivedContractsCount = $archivedContracts->count();
+        $archivedContractsValue = $archivedContracts->sum('cost');
+
         // Expiring soon: contracts with end_date within 30 days (but not expired status)
+        // Exclude contracts that are already in a renewal workflow (they should move to approver work queues)
         $soonToExpireContracts = $contracts->filter(function ($contract) use ($today, $soonToExpire, $expiredContractIds) {
             // Skip if already in expired list
             if (in_array($contract->id, $expiredContractIds)) {
+                return false;
+            }
+            // If renewal is actively being processed (still in workflow), don't keep under "Expiring Soon"
+            if (
+                ($contract->renewal_status ?? null) === 'pending' ||
+                ($contract->lifecycle_stage ?? null) === 'renewal' ||
+                (
+                    in_array(($contract->approval_stage ?? null), ['line_manager', 'hec', 'procurement'], true)
+                    && in_array(($contract->status ?? null), ['in_progress', 'pending', 'draft'], true)
+                )
+            ) {
                 return false;
             }
             if (!$contract->end_date) return false;
@@ -196,7 +231,7 @@ class ContractsController extends Controller
 
         // Filter contracts pending HEC review (for HEC members)
         $pendingHecReviewContracts = collect();
-        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo'])) {
+        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             $pendingHecReviewContracts = $contracts->filter(function ($contract) use ($user) {
                 // Contract must be pending HEC review and assigned to this HEC member
                 return $contract->approval_stage === 'hec'
@@ -251,11 +286,20 @@ class ContractsController extends Controller
         }
         $availableYears = $availableYears->unique()->sort()->values();
 
-        // Get the view type from query parameter (default to 'active' if not set)
-        $viewType = request()->query('view', 'active');
+        // Contracts assigned directly to current user (any role)
+        $myPendingContracts = $contracts->filter(function ($contract) use ($user) {
+            return $contract->current_approver_id == $user->id
+                && in_array($contract->approval_stage ?? '', ['line_manager', 'hec', 'procurement'])
+                && in_array($contract->status ?? '', ['in_progress', 'pending', 'draft']);
+        });
+        $myPendingCount = $myPendingContracts->count();
 
-        // Validate view type
-        $validViewTypes = ['active', 'expiring', 'expired', 'pending-line-manager', 'pending-hec', 'pending-procurement'];
+        // Default view is always 'active' for all users
+        $viewType = request()->query('view', 'active');
+        $validViewTypes = ['active', 'expiring', 'expired', 'archived', 'my_pending'];
+        if ($user->hasRole('procurement-officer')) {
+            $validViewTypes[] = 'procurement';
+        }
         if (!in_array($viewType, $validViewTypes)) {
             $viewType = 'active';
         }
@@ -266,6 +310,7 @@ class ContractsController extends Controller
             'activeContracts' => $activeContracts,
             'expiredContracts' => $expiredContracts,
             'soonToExpireContracts' => $soonToExpireContracts,
+            'archivedContracts' => $archivedContracts,
             'totalContracts' => $totalContracts,
             'totalValue' => $totalValue,
             'activeContractsCount' => $activeContractsCount,
@@ -274,6 +319,8 @@ class ContractsController extends Controller
             'expiredContractsValue' => $expiredContractsValue,
             'soonToExpireContractsCount' => $soonToExpireContractsCount,
             'soonToExpireContractsValue' => $soonToExpireContractsValue,
+            'archivedContractsCount' => $archivedContractsCount,
+            'archivedContractsValue' => $archivedContractsValue,
             'pendingHecReviewContracts' => $pendingHecReviewContracts,
             'pendingHecReviewCount' => $pendingHecReviewCount,
             'pendingHecReviewValue' => $pendingHecReviewValue,
@@ -283,6 +330,8 @@ class ContractsController extends Controller
             'pendingProcurementReviewContracts' => $pendingProcurementReviewContracts,
             'pendingProcurementReviewCount' => $pendingProcurementReviewCount,
             'pendingProcurementReviewValue' => $pendingProcurementReviewValue,
+            'myPendingContracts' => $myPendingContracts,
+            'myPendingCount' => $myPendingCount,
             'noContracts' => $contracts->isEmpty(),
             'availableYears' => $availableYears,
             'viewType' => $viewType
@@ -392,6 +441,16 @@ class ContractsController extends Controller
     public function store(Request $request)
     {
         $user = auth()->user();
+
+        // Log upload debug info to help diagnose failures on live server
+        $this->logUploadDebugInfo($request, ['file_path', 'signed_contract_path', 'terms_conditions_path', 'sla_document_path']);
+
+        // Check if PHP silently rejected the upload (upload_max_filesize or post_max_size exceeded)
+        $uploadError = $this->checkPhpUploadLimits($request);
+        if ($uploadError) {
+            return redirect()->back()->withInput()->withErrors(['file_path' => $uploadError]);
+        }
+
         $request->validate([
             'title' => 'required|string|max:255',
             'contract_type' => 'required|string|max:255',
@@ -408,11 +467,27 @@ class ContractsController extends Controller
             'contract_manager_id' => 'nullable|integer|exists:users,id',
             'impact_if_not_requested' => 'required|string|in:Low,Medium,High',
             'likelihood_rating' => 'required|string|in:Low,Medium,High',
-            'file_path' => 'nullable|mimes:pdf|max:10240',
-            'signed_contract_path' => 'nullable|mimes:pdf|max:10240',
-            'terms_conditions_path' => 'nullable|mimes:pdf|max:10240',
-            'sla_document_path' => 'nullable|mimes:pdf|max:10240',
         ]);
+
+        // Manual file validation (avoids Laravel 'file' rule which fails when PHP drops the upload)
+        foreach (['file_path', 'signed_contract_path', 'terms_conditions_path', 'sla_document_path'] as $field) {
+            if ($request->hasFile($field)) {
+                $file = $request->file($field);
+                if (!$file->isValid()) {
+                    return redirect()->back()->withInput()
+                        ->withErrors([$field => 'The file failed to upload: ' . $file->getErrorMessage() . '. Try copying the file to your Desktop first.']);
+                }
+                if ($file->getSize() > 10 * 1024 * 1024) {
+                    return redirect()->back()->withInput()
+                        ->withErrors([$field => 'The document must not exceed 10MB.']);
+                }
+                $ext = strtolower($file->getClientOriginalExtension());
+                if ($ext !== 'pdf') {
+                    return redirect()->back()->withInput()
+                        ->withErrors([$field => 'The document must be a PDF file. You uploaded a .' . $ext . ' file.']);
+                }
+            }
+        }
 
         // Generate contract number if not provided
         $contractNumber = $request->contract_number;
@@ -485,17 +560,15 @@ class ContractsController extends Controller
             }
         }
 
-        // Determine status and workflow based on contract source
+        // New and existing contracts: no line manager approval. Line manager only views details and initiates renewal when near expiry.
         $isNewContract = ($request->contract_source === 'new');
 
         if ($isNewContract) {
-            // NEW contracts: Start as "in_progress" and go through approval workflow
-            $initialStatus = 'in_progress';
-            $approvalStage = 'line_manager';
-            $lifecycleStage = 'drafting';
+            $initialStatus = 'active';
+            $approvalStage = null;
+            $lifecycleStage = 'execution';
         } else {
-            // EXISTING contracts: Use the status provided, no workflow
-            $initialStatus = $request->status; // Use the status from form (active, expired, etc.)
+            $initialStatus = $request->status;
             $approvalStage = null;
             $lifecycleStage = $request->status === 'active' ? 'execution' : ($request->status === 'expired' ? 'close' : 'drafting');
         }
@@ -541,60 +614,49 @@ class ContractsController extends Controller
             'sla_document_path' => 'sla_document_path',
         ];
 
+        // Ensure the contracts directory exists on the public disk
+        if (!Storage::disk('public')->exists('contracts')) {
+            Storage::disk('public')->makeDirectory('contracts');
+        }
+
         foreach ($fileFields as $requestField => $dbField) {
             if ($request->hasFile($requestField)) {
-                $file = $request->file($requestField);
-                $filename = time() . '_' . $file->getClientOriginalName();
-                $filePath = $file->storeAs('contracts', $filename, 'public');
-                $contract->$dbField = '/storage/' . $filePath;
+                try {
+                    $file = $request->file($requestField);
+                    if (!$file->isValid()) {
+                        Log::error("Contract file upload: Invalid file for field {$requestField}", [
+                            'error' => $file->getErrorMessage(),
+                            'original_name' => $file->getClientOriginalName(),
+                        ]);
+                        continue;
+                    }
+                    $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file->getClientOriginalName());
+                    $filePath = $file->storeAs('contracts', $filename, 'public');
+                    if ($filePath === false) {
+                        Log::error("Contract file upload: storeAs returned false for field {$requestField}", [
+                            'disk' => 'public',
+                            'storage_path' => storage_path('app/public/contracts'),
+                            'original_name' => $file->getClientOriginalName(),
+                        ]);
+                        return redirect()->back()->withInput()
+                            ->withErrors([$requestField => 'Failed to save the uploaded file. Please check server storage permissions.']);
+                    }
+                    $contract->$dbField = '/storage/' . $filePath;
+                } catch (\Exception $e) {
+                    Log::error("Contract file upload exception for field {$requestField}: " . $e->getMessage(), [
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+                    return redirect()->back()->withInput()
+                        ->withErrors([$requestField => 'File upload failed: ' . $e->getMessage()]);
+                }
             }
         }
         $contract->save();
 
-        // Only start workflow for NEW contracts
         if ($isNewContract) {
-            // Start approval workflow: Line Manager -> HEC -> Active
-            $workflow = Workflow::create([
-                'user_id' => $user->id,
-                'work_flow_status' => 'pending',
-                'work_flow_completed' => 0,
-                'ccbrt_contract_id' => $contract->id,
-            ]);
-
-            // Get Line Manager for the department
-            $department = Departments::find($request->department_id);
-            $lineManager = null;
-            if ($department) {
-                $lineManager = User::role('line-manager')->where('deptId', $department->id)->first();
-            }
-
-            if ($lineManager) {
-                $contract->current_approver_id = $lineManager->id;
-                $contract->save();
-
-                // Create workflow history for Line Manager
-                WorkFlowHistory::create([
-                    'work_flow_id' => $workflow->id,
-                    'remark' => 'New contract submitted by Procurement Officer ' . $user->name . ' - Awaiting Line Manager review',
-                    'forwarded_by' => $user->id,
-                    'attended_by' => $lineManager->id,
-                    'status' => 0, // pending
-                    'step_name' => 'Line Manager',
-                    'created_at' => Carbon::now(),
-                ]);
-
-                // Send notification to Line Manager (queued)
-                try {
-                    Mail::to($lineManager->email)->queue(new ContractAddedMail($contract, $lineManager, 'A new contract has been submitted and requires your review and approval.'));
-                } catch (\Exception $e) {
-                    Log::error('Failed to queue contract notification to line manager: ' . $e->getMessage());
-                }
-            }
-
             return redirect()->route('procurements.contracts.index')
-                ->with('success', 'New contract created successfully! Status set to "In Progress". Line Manager has been notified for review.');
+                ->with('success', 'New contract created successfully! Status: Active. Monitoring is enabled.');
         } else {
-            // EXISTING contract: Just save with provided status, no workflow
             return redirect()->route('procurements.contracts.index')
                 ->with('success', 'Existing contract added successfully! Status: ' . ucfirst($initialStatus) . '. Monitoring is enabled.');
         }
@@ -760,8 +822,8 @@ class ContractsController extends Controller
         $user = Auth::user();
 
         // Only Procurement Officers, HR, and Super Admins can edit contracts
-        // Line Managers and HEC members are NOT allowed to edit
-        if (!$user->hasAnyRole(['procurement-officer', 'hr', 'super-admin'])) {
+        // Line Managers, HEC members, and CEO (view-only) are NOT allowed to edit
+        if (!$user->hasAnyRole(['procurement-officer', 'hr', 'super-admin']) || $user->hasPermissionTo('ceo_view_only')) {
             return redirect()->route('procurements.contracts.index')
                 ->withErrors('You do not have permission to edit contracts. Only Procurement Officers, HR, and Super Admins can edit contracts.');
         }
@@ -782,13 +844,22 @@ class ContractsController extends Controller
         $user = Auth::user();
 
         // Only Procurement Officers, HR, and Super Admins can update contracts
-        // Line Managers and HEC members are NOT allowed to update
-        if (!$user->hasAnyRole(['procurement-officer', 'hr', 'super-admin'])) {
+        // Line Managers, HEC members, and CEO (view-only) are NOT allowed to update
+        if (!$user->hasAnyRole(['procurement-officer', 'hr', 'super-admin']) || $user->hasPermissionTo('ceo_view_only')) {
             return redirect()->route('procurements.contracts.index')
                 ->withErrors('You do not have permission to update contracts. Only Procurement Officers, HR, and Super Admins can update contracts.');
         }
 
         $contract = CcbrtContract::findOrFail($id);
+
+        // Log upload debug info to help diagnose failures on live server
+        $this->logUploadDebugInfo($request, ['file_path']);
+
+        // Check if PHP silently rejected the upload (upload_max_filesize or post_max_size exceeded)
+        $uploadError = $this->checkPhpUploadLimits($request);
+        if ($uploadError) {
+            return redirect()->back()->withInput()->withErrors(['file_path' => $uploadError]);
+        }
 
         $request->validate([
             'title' => 'required|string|max:255',
@@ -805,8 +876,25 @@ class ContractsController extends Controller
             'end_date' => 'required|date|after_or_equal:start_date',
             'contract_manager_id' => 'nullable|integer|exists:users,id',
             'line_manager_id' => 'nullable|integer|exists:users,id',
-            'file_path' => 'nullable|mimes:pdf|max:10240',
         ]);
+
+        // Manual file validation (avoids Laravel 'file' rule which fails when PHP drops the upload)
+        if ($request->hasFile('file_path')) {
+            $file = $request->file('file_path');
+            if (!$file->isValid()) {
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'The file failed to upload: ' . $file->getErrorMessage() . '. Try copying the file to your Desktop first.']);
+            }
+            if ($file->getSize() > 10 * 1024 * 1024) {
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'The document must not exceed 10MB.']);
+            }
+            $ext = strtolower($file->getClientOriginalExtension());
+            if ($ext !== 'pdf') {
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'The document must be a PDF file. You uploaded a .' . $ext . ' file.']);
+            }
+        }
 
         // Get line manager if contract_manager_id is not provided
         $contractManagerId = $request->contract_manager_id;
@@ -853,11 +941,45 @@ class ContractsController extends Controller
 
         // Handle file upload
         if ($request->hasFile('file_path')) {
-            $file = $request->file('file_path');
-            $filename = time() . '_' . $file->getClientOriginalName();
-            $filePath = $file->storeAs('contracts', $filename, 'public');
-            $contract->file_path = '/storage/' . $filePath;
-            $contract->save();
+            try {
+                $file = $request->file('file_path');
+                if (!$file->isValid()) {
+                    Log::error('Contract update file upload: Invalid file', [
+                        'error' => $file->getErrorMessage(),
+                        'original_name' => $file->getClientOriginalName(),
+                        'contract_id' => $id,
+                    ]);
+                    return redirect()->back()->withInput()
+                        ->withErrors(['file_path' => 'The uploaded file is invalid: ' . $file->getErrorMessage()]);
+                }
+
+                // Ensure the contracts directory exists on the public disk
+                if (!Storage::disk('public')->exists('contracts')) {
+                    Storage::disk('public')->makeDirectory('contracts');
+                }
+
+                $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file->getClientOriginalName());
+                $filePath = $file->storeAs('contracts', $filename, 'public');
+                if ($filePath === false) {
+                    Log::error('Contract update file upload: storeAs returned false', [
+                        'disk' => 'public',
+                        'storage_path' => storage_path('app/public/contracts'),
+                        'contract_id' => $id,
+                        'original_name' => $file->getClientOriginalName(),
+                    ]);
+                    return redirect()->back()->withInput()
+                        ->withErrors(['file_path' => 'Failed to save the uploaded file. Please check server storage permissions.']);
+                }
+                $contract->file_path = '/storage/' . $filePath;
+                $contract->save();
+            } catch (\Exception $e) {
+                Log::error('Contract update file upload exception: ' . $e->getMessage(), [
+                    'contract_id' => $id,
+                    'trace' => $e->getTraceAsString(),
+                ]);
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'File upload failed: ' . $e->getMessage()]);
+            }
         }
 
         return redirect()->route('procurements.contracts.index')
@@ -869,6 +991,15 @@ class ContractsController extends Controller
      */
     public function destroy($id)
     {
+        $user = Auth::user();
+        
+        // Only Super Admins can delete contracts
+        // CEO (view-only) cannot delete
+        if (!$user->hasRole('super-admin') || $user->hasPermissionTo('ceo_view_only')) {
+            return redirect()->route('procurements.contracts.index')
+                ->withErrors('You do not have permission to delete contracts. Only Super Admins can delete contracts.');
+        }
+        
         $contract = CcbrtContract::findOrFail($id);
         $contract->delete();
 
@@ -885,7 +1016,6 @@ class ContractsController extends Controller
 
         // Super Admin and Procurement Officer can see all contracts; others only see contracts they are responsible for
         $contractsQuery = CcbrtContract::with(['vendor', 'department', 'division'])
-            ->where('status', 'active')
             ->orderBy('created_at', 'desc');
 
         if (!$user->hasAnyRole(['super-admin', 'procurement-officer'])) {
@@ -911,55 +1041,458 @@ class ContractsController extends Controller
             'encryption' => config('mail.mailers.smtp.encryption'),
         ];
 
-        return view('procurements.contracts.notification-management', compact('contracts', 'queueConnection', 'pendingJobs', 'failedJobs', 'mailConfig'));
+        // Get notification logs (latest 200)
+        $notificationLogs = ContractNotificationLog::with(['contract', 'recipientUser', 'sender'])
+            ->orderBy('created_at', 'desc')
+            ->take(200)
+            ->get();
+
+        // Notification stats
+        $notificationStats = [
+            'total' => ContractNotificationLog::count(),
+            'queued' => ContractNotificationLog::where('status', 'queued')->count(),
+            'sent' => ContractNotificationLog::where('status', 'sent')->count(),
+            'failed' => ContractNotificationLog::where('status', 'failed')->count(),
+            'today' => ContractNotificationLog::whereDate('created_at', Carbon::today())->count(),
+            'this_week' => ContractNotificationLog::where('created_at', '>=', Carbon::now()->startOfWeek())->count(),
+        ];
+
+        // Get near-expiry contracts for manual test tools
+        $today = Carbon::now();
+        $nearExpiryContracts = CcbrtContract::with(['department', 'vendor'])
+            ->where('status', 'active')
+            ->whereNotNull('end_date')
+            ->whereBetween('end_date', [$today, $today->copy()->addDays(90)])
+            ->orderBy('end_date', 'asc')
+            ->get();
+
+        // Get expired contracts for manual test tools
+        $expiredContracts = CcbrtContract::with(['department', 'vendor'])
+            ->where(function ($query) use ($today) {
+                $query->where('status', 'expired')
+                    ->orWhere(function ($q) use ($today) {
+                        $q->whereNotNull('end_date')->where('end_date', '<', $today);
+                    });
+            })
+            ->where(function ($query) {
+                $query->whereNull('is_archived')->orWhere('is_archived', false);
+            })
+            ->orderBy('end_date', 'desc')
+            ->get();
+
+        // HEC contracts: near-expiry (within 30 days)
+        $hecNearExpiryContracts = \App\Models\HecContract::with(['contractOwner', 'division'])
+            ->whereNotNull('end_date')
+            ->whereIn('status', ['active', 'in_progress'])
+            ->whereBetween('end_date', [$today, $today->copy()->addDays(30)])
+            ->orderBy('end_date', 'asc')
+            ->get();
+
+        // HEC contracts: expired with no reminder sent yet
+        $hecExpiredContracts = \App\Models\HecContract::with(['contractOwner', 'division'])
+            ->where('status', 'expired')
+            ->whereNotNull('end_date')
+            ->orderBy('end_date', 'desc')
+            ->get();
+
+        return view('procurements.contracts.notification-management', compact(
+            'contracts', 'queueConnection', 'pendingJobs', 'failedJobs', 'mailConfig',
+            'notificationLogs', 'notificationStats', 'nearExpiryContracts', 'expiredContracts',
+            'hecNearExpiryContracts', 'hecExpiredContracts'
+        ));
     }
 
     /**
-     * Test sending a reminder email (Admin area)
+     * Test sending a reminder email (Admin area). Uses queued ContractsReport mailable.
      */
     public function testReminderEmail(Request $request)
     {
         $request->validate([
             'test_email' => 'required|email',
-            'contract_id' => 'nullable|exists:ccbrt_contracts,id'
+            'contract_id' => 'required|exists:ccbrt_contracts,id'
         ]);
 
         try {
-            $contract = null;
-            $emailBody = "This is a test contract reminder email from your eDoc app.\n\n";
+            $contract = CcbrtContract::with(['department', 'vendor'])->findOrFail($request->contract_id);
+            $message = 'This is a test contract reminder email from your eDoc app. This is a test email to verify that contract reminder emails are working correctly.';
 
-            if ($request->contract_id) {
-                $contract = CcbrtContract::with(['department', 'vendor'])->find($request->contract_id);
-                if ($contract) {
-                    $emailBody .= "Contract Details:\n";
-                    $emailBody .= "Title: {$contract->title}\n";
-                    if ($contract->vendor) {
-                        $emailBody .= "Vendor: {$contract->vendor->name}\n";
-                    }
-                    if ($contract->department) {
-                        $emailBody .= "Department: {$contract->department->dept_name}\n";
-                    }
-                    if ($contract->end_date) {
-                        $emailBody .= "End Date: " . Carbon::parse($contract->end_date)->format('Y-m-d') . "\n";
+            Mail::to($request->test_email)->queue(new ContractsReport(collect([$contract]), $message, $request->test_email));
+
+            ContractNotificationLog::logNotification([
+                'contract_id' => $contract->id,
+                'notification_type' => 'test_email',
+                'recipient_email' => $request->test_email,
+                'recipient_name' => 'Test Recipient',
+                'recipient_role' => 'test',
+                'status' => 'queued',
+                'message' => $message,
+                'sent_by' => Auth::id(),
+                'trigger_source' => 'test',
+            ]);
+
+            Log::info('ContractsReport test email queued', ['test_email' => $request->test_email, 'contract_id' => $contract->id]);
+
+            return back()->with('success', 'Test reminder email has been queued for ' . $request->test_email . '. Ensure a queue worker is running.');
+        } catch (\Exception $e) {
+            ContractNotificationLog::logNotification([
+                'contract_id' => $request->contract_id,
+                'notification_type' => 'test_email',
+                'recipient_email' => $request->test_email,
+                'recipient_name' => 'Test Recipient',
+                'recipient_role' => 'test',
+                'status' => 'failed',
+                'message' => 'Test email attempt',
+                'error_message' => $e->getMessage(),
+                'sent_by' => Auth::id(),
+                'trigger_source' => 'test',
+            ]);
+
+            Log::error('Failed to queue test reminder email', [
+                'test_email' => $request->test_email,
+                'contract_id' => $request->contract_id,
+                'error' => $e->getMessage()
+            ]);
+            return back()->with('error', 'Failed to queue test email: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Send test near-expiry notification to Line Manager and optionally HEC for a specific contract.
+     * Admin/Procurement Officer only.
+     */
+    public function testNearExpiryNotification(Request $request)
+    {
+        $request->validate([
+            'contract_id' => 'required|exists:ccbrt_contracts,id',
+            'send_to_hec' => 'nullable|boolean',
+        ]);
+
+        $contract = CcbrtContract::with(['department', 'vendor'])->findOrFail($request->contract_id);
+        $user = Auth::user();
+        $today = Carbon::now();
+        $sentTo = [];
+
+        if (!$contract->department_id) {
+            return back()->with('error', 'Contract has no department assigned.');
+        }
+
+        $department = $contract->department;
+        if (!$department) {
+            return back()->with('error', 'Department not found for this contract.');
+        }
+
+        $daysUntilExpiry = $contract->end_date
+            ? $today->diffInDays(Carbon::parse($contract->end_date), false)
+            : 'N/A';
+
+        // Send to Line Manager(s)
+        $lineManagers = User::role('line-manager')
+            ->where('deptId', $contract->department_id)
+            ->where('status', 'active')
+            ->get();
+
+        if ($lineManagers->isEmpty()) {
+            return back()->with('error', 'No Line Manager found for department: ' . ($department->dept_name ?? 'Unknown'));
+        }
+
+        foreach ($lineManagers as $lm) {
+            $message = "[TEST] Contract '{$contract->title}' is expiring in {$daysUntilExpiry} days. Please review and take action (Renew, Terminate, or Hold).";
+
+            try {
+                Mail::to($lm->email)->queue(new ContractsReport(collect([$contract]), $message));
+
+                ContractNotificationLog::logNotification([
+                    'contract_id' => $contract->id,
+                    'notification_type' => 'near_expiry',
+                    'recipient_email' => $lm->email,
+                    'recipient_name' => trim(($lm->fname ?? '') . ' ' . ($lm->lname ?? '')),
+                    'recipient_role' => 'line_manager',
+                    'recipient_user_id' => $lm->id,
+                    'status' => 'queued',
+                    'message' => $message,
+                    'sent_by' => $user->id,
+                    'trigger_source' => 'manual',
+                ]);
+
+                $sentTo[] = 'Line Manager: ' . $lm->email;
+            } catch (\Exception $e) {
+                ContractNotificationLog::logNotification([
+                    'contract_id' => $contract->id,
+                    'notification_type' => 'near_expiry',
+                    'recipient_email' => $lm->email,
+                    'recipient_name' => trim(($lm->fname ?? '') . ' ' . ($lm->lname ?? '')),
+                    'recipient_role' => 'line_manager',
+                    'recipient_user_id' => $lm->id,
+                    'status' => 'failed',
+                    'message' => $message,
+                    'error_message' => $e->getMessage(),
+                    'sent_by' => $user->id,
+                    'trigger_source' => 'manual',
+                ]);
+                Log::error('Manual near-expiry test: failed to send to LM', ['email' => $lm->email, 'error' => $e->getMessage()]);
+            }
+        }
+
+        // Send to HEC if requested
+        if ($request->send_to_hec && $department->hec_id) {
+            $hec = Hec::find($department->hec_id);
+            if ($hec) {
+                $hecLevelName = strtoupper(trim($hec->hec_level_name));
+                $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
+                $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
+
+                $hecMembers = User::role($roleSlug)->where('status', 'active')->get();
+
+                foreach ($hecMembers as $hm) {
+                    $message = "[TEST] ESCALATION: Contract '{$contract->title}' is expiring in {$daysUntilExpiry} days. Line Manager has been notified. Please monitor.";
+
+                    try {
+                        Mail::to($hm->email)->queue(new ContractsReport(collect([$contract]), $message));
+
+                        ContractNotificationLog::logNotification([
+                            'contract_id' => $contract->id,
+                            'notification_type' => 'near_expiry_escalation',
+                            'recipient_email' => $hm->email,
+                            'recipient_name' => trim(($hm->fname ?? '') . ' ' . ($hm->lname ?? '')),
+                            'recipient_role' => 'hec',
+                            'recipient_user_id' => $hm->id,
+                            'status' => 'queued',
+                            'message' => $message,
+                            'sent_by' => $user->id,
+                            'trigger_source' => 'manual',
+                        ]);
+
+                        $sentTo[] = 'HEC (' . $hecLevelName . '): ' . $hm->email;
+                    } catch (\Exception $e) {
+                        ContractNotificationLog::logNotification([
+                            'contract_id' => $contract->id,
+                            'notification_type' => 'near_expiry_escalation',
+                            'recipient_email' => $hm->email,
+                            'recipient_name' => trim(($hm->fname ?? '') . ' ' . ($hm->lname ?? '')),
+                            'recipient_role' => 'hec',
+                            'recipient_user_id' => $hm->id,
+                            'status' => 'failed',
+                            'message' => $message,
+                            'error_message' => $e->getMessage(),
+                            'sent_by' => $user->id,
+                            'trigger_source' => 'manual',
+                        ]);
+                        Log::error('Manual near-expiry test: failed to send to HEC', ['email' => $hm->email, 'error' => $e->getMessage()]);
                     }
                 }
             }
+        }
 
-            $emailBody .= "\nThis is a test email to verify that contract reminder emails are working correctly.";
+        if (empty($sentTo)) {
+            return back()->with('error', 'No emails were sent. Check if Line Managers exist for the department.');
+        }
 
-            // Use EXACT same Mail::raw() pattern as SettingsController::sendTestEmail()
-            Mail::raw($emailBody, function ($message) use ($request, $contract) {
-                $message->to($request->test_email)
-                    ->subject('Test Contract Reminder Email' . ($contract ? ': ' . $contract->title : ''));
+        return back()->with('success', 'Near-expiry test notification queued to: ' . implode(', ', $sentTo));
+    }
+
+    /**
+     * AJAX: Get Line Manager and HEC member info for a given contract (by department).
+     */
+    public function getContractRecipients(Request $request)
+    {
+        $contract = CcbrtContract::with(['department'])->find($request->contract_id);
+        if (!$contract || !$contract->department_id) {
+            return response()->json(['line_managers' => [], 'hec_members' => [], 'department' => null]);
+        }
+
+        $department = $contract->department;
+
+        // Line Managers
+        $lineManagers = User::role('line-manager')
+            ->where('deptId', $contract->department_id)
+            ->where('status', 'active')
+            ->get()
+            ->map(function ($u) {
+                return [
+                    'name' => trim(($u->fname ?? '') . ' ' . ($u->lname ?? '')),
+                    'email' => $u->email,
+                ];
             });
 
-            return back()->with('success', 'Test reminder email sent to ' . $request->test_email);
-        } catch (\Exception $e) {
-            Log::error('Failed to send test reminder email', [
-                'test_email' => $request->test_email,
-                'error' => $e->getMessage()
+        // HEC Members
+        $hecMembers = collect();
+        $hecLevelName = null;
+        if ($department->hec_id) {
+            $hec = \App\Models\Hec::find($department->hec_id);
+            if ($hec) {
+                $hecLevelName = strtoupper(trim($hec->hec_level_name));
+                $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
+                $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
+
+                $hecMembers = User::role($roleSlug)->where('status', 'active')->get()->map(function ($u) {
+                    return [
+                        'name' => trim(($u->fname ?? '') . ' ' . ($u->lname ?? '')),
+                        'email' => $u->email,
+                    ];
+                });
+            }
+        }
+
+        return response()->json([
+            'department' => $department->dept_name ?? 'N/A',
+            'hec_level' => $hecLevelName,
+            'line_managers' => $lineManagers->values(),
+            'hec_members' => $hecMembers->values(),
+        ]);
+    }
+
+    /**
+     * Test initiating a renewal from admin area (simulates Procurement Officer initiating renewal).
+     * This creates the workflow and sends notifications but does NOT auto-approve.
+     */
+    public function testInitiateRenewal(Request $request)
+    {
+        $request->validate([
+            'contract_id' => 'required|exists:ccbrt_contracts,id',
+        ]);
+
+        $contract = CcbrtContract::with(['department', 'workflow'])->findOrFail($request->contract_id);
+        $user = Auth::user();
+
+        // Check if a renewal is already in progress
+        $renewalInProgress =
+            ($contract->renewal_status === 'pending') ||
+            ($contract->lifecycle_stage === 'renewal') ||
+            in_array($contract->approval_stage ?? '', ['line_manager', 'hec', 'procurement']);
+
+        if ($renewalInProgress) {
+            return back()->with('error', 'A renewal process for this contract is already in progress.');
+        }
+
+        $department = $contract->department;
+        if (!$department) {
+            return back()->with('error', 'Contract has no department assigned. Cannot initiate renewal.');
+        }
+
+        // Find Line Manager for the department
+        $lineManager = User::role('line-manager')
+            ->where('deptId', $department->id)
+            ->where('status', 'active')
+            ->first();
+
+        if (!$lineManager) {
+            return back()->with('error', 'No Line Manager found for department: ' . ($department->dept_name ?? 'Unknown'));
+        }
+
+        // Create workflow
+        $workflow = Workflow::create([
+            'user_id' => $user->id,
+            'work_flow_status' => 'pending',
+            'work_flow_completed' => 0,
+            'ccbrt_contract_id' => $contract->id,
+        ]);
+
+        // Update contract status
+        $contract->renewal_status = 'pending';
+        $contract->status = 'in_progress';
+        $contract->lifecycle_stage = 'renewal';
+        $contract->approval_stage = 'line_manager';
+        $contract->current_approver_id = $lineManager->id;
+        $contract->save();
+
+        $remark = 'Contract renewal initiated from Admin Test Area by ' . $user->name . ' - Forwarded to Line Manager for review and rating';
+
+        WorkFlowHistory::create([
+            'work_flow_id' => $workflow->id,
+            'remark' => $remark,
+            'forwarded_by' => $user->id,
+            'attended_by' => $lineManager->id,
+            'status' => 0,
+            'step_name' => 'Line Manager',
+            'created_at' => Carbon::now(),
+        ]);
+
+        // Send notification to Line Manager
+        $emailStatus = 'not_sent';
+        try {
+            Mail::to($lineManager->email)->queue(new ContractAddedMail($contract, $lineManager, 'A contract renewal has been initiated from Admin. Please review and rate the contract.'));
+            $emailStatus = 'queued';
+
+            ContractNotificationLog::logNotification([
+                'contract_id' => $contract->id,
+                'notification_type' => 'renewal_initiated',
+                'recipient_email' => $lineManager->email,
+                'recipient_name' => trim(($lineManager->fname ?? '') . ' ' . ($lineManager->lname ?? '')),
+                'recipient_role' => 'line_manager',
+                'recipient_user_id' => $lineManager->id,
+                'status' => 'queued',
+                'message' => $remark,
+                'sent_by' => $user->id,
+                'trigger_source' => 'manual',
             ]);
-            return back()->with('error', 'Failed to send test email: ' . $e->getMessage());
+        } catch (\Exception $e) {
+            ContractNotificationLog::logNotification([
+                'contract_id' => $contract->id,
+                'notification_type' => 'renewal_initiated',
+                'recipient_email' => $lineManager->email,
+                'recipient_name' => trim(($lineManager->fname ?? '') . ' ' . ($lineManager->lname ?? '')),
+                'recipient_role' => 'line_manager',
+                'recipient_user_id' => $lineManager->id,
+                'status' => 'failed',
+                'message' => $remark,
+                'error_message' => $e->getMessage(),
+                'sent_by' => $user->id,
+                'trigger_source' => 'manual',
+            ]);
+            Log::error('Test renewal: failed to send email to LM', ['email' => $lineManager->email, 'error' => $e->getMessage()]);
+        }
+
+        $lmName = trim(($lineManager->fname ?? '') . ' ' . ($lineManager->lname ?? ''));
+        return back()->with('success', "Renewal initiated for '{$contract->title}'! Forwarded to Line Manager: {$lmName} ({$lineManager->email}). Email: {$emailStatus}. The Line Manager must now rate (1-5) and choose action (Renew/Terminate/Hold).");
+    }
+
+    /**
+     * Run the near-expiry notification command manually from admin area
+     */
+    public function runNearExpiryCommand(Request $request)
+    {
+        $days = $request->input('days', 90);
+
+        try {
+            Artisan::call('contracts:notify-near-expiry', ['--days' => $days]);
+            $output = Artisan::output();
+
+            return back()->with('success', 'Near-expiry notification command executed. Output: ' . $output);
+        } catch (\Exception $e) {
+            Log::error('Failed to run near-expiry command from admin', ['error' => $e->getMessage()]);
+            return back()->with('error', 'Failed to run command: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Run the expired contracts notification command manually from admin area
+     */
+    public function runExpiredCommand()
+    {
+        try {
+            Artisan::call('contracts:notify-expired');
+            $output = Artisan::output();
+
+            return back()->with('success', 'Expired contracts notification command executed. Output: ' . $output);
+        } catch (\Exception $e) {
+            Log::error('Failed to run expired command from admin', ['error' => $e->getMessage()]);
+            return back()->with('error', 'Failed to run command: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Run the HEC contracts notification command manually from admin area
+     */
+    public function runHecContractsCommand(Request $request)
+    {
+        $days = $request->input('days', 30);
+        try {
+            Artisan::call('hec-contracts:sync-and-notify', ['--days' => $days]);
+            $output = Artisan::output();
+            return back()->with('success', 'HEC contracts notification command executed. Output: ' . $output);
+        } catch (\Exception $e) {
+            Log::error('Failed to run HEC contracts command from admin', ['error' => $e->getMessage()]);
+            return back()->with('error', 'Failed to run HEC command: ' . $e->getMessage());
         }
     }
 
@@ -1018,16 +1551,65 @@ class ContractsController extends Controller
             'impact_if_not_requested' => 'required|string|in:Low,Medium,High',
             'likelihood_rating' => 'required|string|in:Low,Medium,High',
             'renewal_status' => 'required|string|in:renewed,not_renewed,pending',
-            'file_path' => 'required|file|max:10240',
+            'file_path' => 'required',
         ]);
+
+        // Log upload debug info
+        $this->logUploadDebugInfo($request, ['file_path']);
+
+        // Check if PHP silently rejected the upload (upload_max_filesize or post_max_size exceeded)
+        $uploadError = $this->checkPhpUploadLimits($request);
+        if ($uploadError) {
+            return redirect()->back()->withInput()->withErrors(['file_path' => $uploadError]);
+        }
+
+        // Manual file validation (avoids Laravel 'file' rule which fails when PHP drops the upload)
+        if ($request->hasFile('file_path')) {
+            $file = $request->file('file_path');
+            if (!$file->isValid()) {
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'The file failed to upload: ' . $file->getErrorMessage() . '. Try copying the file to your Desktop first.']);
+            }
+            if ($file->getSize() > 10 * 1024 * 1024) {
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'The document must not exceed 10MB.']);
+            }
+            $ext = strtolower($file->getClientOriginalExtension());
+            if ($ext !== 'pdf') {
+                return redirect()->back()->withInput()
+                    ->withErrors(['file_path' => 'The document must be a PDF file. You uploaded a .' . $ext . ' file.']);
+            }
+        } else {
+            return redirect()->back()->withInput()
+                ->withErrors(['file_path' => 'Please select a PDF file to upload. If you selected a file and still see this error, the file may be too large for the server. Current PHP upload limit: ' . ini_get('upload_max_filesize')]);
+        }
 
         try {
             // Handle file upload
             $filePath = null;
             if ($request->hasFile('file_path')) {
                 $file = $request->file('file_path');
-                $fileName = time() . '_' . $file->getClientOriginalName();
+                if (!$file->isValid()) {
+                    return redirect()->back()->withInput()
+                        ->withErrors(['file_path' => 'The uploaded file is invalid: ' . $file->getErrorMessage()]);
+                }
+
+                // Ensure the contracts directory exists on the public disk
+                if (!Storage::disk('public')->exists('contracts')) {
+                    Storage::disk('public')->makeDirectory('contracts');
+                }
+
+                $fileName = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file->getClientOriginalName());
                 $filePath = $file->storeAs('contracts', $fileName, 'public');
+                if ($filePath === false) {
+                    Log::error('Contract upload: storeAs returned false', [
+                        'disk' => 'public',
+                        'storage_path' => storage_path('app/public/contracts'),
+                        'original_name' => $file->getClientOriginalName(),
+                    ]);
+                    return redirect()->back()->withInput()
+                        ->withErrors(['file_path' => 'Failed to save the uploaded file. Please check server storage permissions.']);
+                }
             }
 
             // Create contract with auto-enabled monitoring
@@ -1038,7 +1620,7 @@ class ContractsController extends Controller
                 'division_id' => $request->division_id,
                 'currency' => $request->currency,
                 'department_id' => $request->department_id,
-                'status' => 'in_progress', // Always start as in_progress for approval workflow
+                'status' => 'active',
                 'cost' => $request->cost,
                 'duration_months' => $request->duration_months,
                 'notice_period_months' => $request->notice_period_months,
@@ -1048,55 +1630,17 @@ class ContractsController extends Controller
                 'likelihood_rating' => $request->likelihood_rating,
                 'renewal_status' => $request->renewal_status,
                 'file_path' => $filePath,
-                // Auto-enable monitoring for all uploaded contracts
                 'alert_30_days' => true,
                 'alert_60_days' => true,
                 'alert_90_days' => true,
-                'approval_stage' => 'line_manager',
+                'approval_stage' => null,
                 'created_by' => auth()->id(),
             ]);
 
-            // Eager load relationships: vendor, department, creator
             $contract->load(['vendor', 'department', 'creator']);
 
-            // Start approval workflow
-            $workflow = Workflow::create([
-                'user_id' => auth()->id(),
-                'work_flow_status' => 'pending',
-                'work_flow_completed' => 0,
-                'ccbrt_contract_id' => $contract->id,
-            ]);
-
-            // Get Line Manager for notification
-            $lineManagers = User::role('line-manager')->where('deptId', $contract->department_id)->get();
-            $lineManager = $lineManagers->first();
-
-            if ($lineManager) {
-                $contract->current_approver_id = $lineManager->id;
-                $contract->save();
-
-                // Create workflow history for Line Manager
-                WorkFlowHistory::create([
-                    'work_flow_id' => $workflow->id,
-                    'remark' => 'Contract (Uploaded) submitted by ' . auth()->user()->name . ' - Awaiting Line Manager approval',
-                    'forwarded_by' => auth()->id(),
-                    'attended_by' => $lineManager->id,
-                    'status' => 0, // pending
-                    'step_name' => 'Line Manager',
-                    'created_at' => Carbon::now(),
-                ]);
-
-                // Send notification to Line Manager (queued)
-                try {
-                    Mail::to($lineManager->email)->queue(new ContractAddedMail($contract, $lineManager, 'A contract has been uploaded and requires your review and approval.'));
-                    Log::info('Contract notification queued for line manager: ' . $lineManager->email);
-                } catch (\Exception $e) {
-                    Log::error('Failed to queue contract notification to line manager: ' . $e->getMessage());
-                }
-            }
-
             return redirect()->route('procurements.contracts.index')
-                ->with('success', 'Contract uploaded successfully! Monitoring is enabled and Line Manager has been notified for approval.');
+                ->with('success', 'Contract uploaded successfully! Status: Active. Monitoring is enabled.');
         } catch (\Exception $e) {
             Log::error('Contract upload failed: ' . $e->getMessage());
             return redirect()->back()->with('error', 'Failed to upload contract. Check logs for details.');
@@ -1210,7 +1754,7 @@ class ContractsController extends Controller
         $contractsQuery = CcbrtContract::with($relationships);
 
         // Apply department filter if user is Line Manager or HEC member
-        if ($user->hasRole('line-manager') || $user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo'])) {
+        if ($user->hasRole('line-manager') || $user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             if (!empty($allowedDepartmentIds)) {
                 $contractsQuery->whereIn('department_id', $allowedDepartmentIds);
             } else {
@@ -1267,8 +1811,10 @@ class ContractsController extends Controller
         $allowedDepartmentIds = $this->allowedDepartmentIds($user);
 
         // For Line Managers and HEC members, check if contract department is in their allowed list
-        if (($user->hasRole('line-manager') || $user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo'])) && $contract->department_id) {
-            if (!in_array($contract->department_id, $allowedDepartmentIds)) {
+        // Exception: If user is specifically assigned as current_approver_id, allow them to approve
+        if (($user->hasRole('line-manager') || $user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) && $contract->department_id) {
+            $isAssignedApprover = $contract->current_approver_id == $user->id;
+            if (!in_array($contract->department_id, $allowedDepartmentIds) && !$isAssignedApprover) {
                 return redirect()->route('procurements.contracts.index')
                     ->withErrors('You do not have permission to approve contracts from this department.');
             }
@@ -1350,7 +1896,8 @@ class ContractsController extends Controller
         if ($currentStep === 'Line Manager') {
             // Validate required fields for Line Manager
             $request->validate([
-                'contract_rating' => 'required|numeric|min:1|max:5',
+                // Use 1-5 scale for rating
+                'contract_rating' => 'required|integer|min:1|max:5',
                 'contract_action' => 'required|in:renew,terminate,hold',
             ]);
 
@@ -1417,7 +1964,7 @@ class ContractsController extends Controller
                     $hec = \App\Models\Hec::find($department->hec_id);
                     if ($hec) {
                         $hecLevelName = strtoupper(trim($hec->hec_level_name));
-                        $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CRHDO' => 'crhdo'];
+                        $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
                         $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
 
                         $hecMember = User::role($roleSlug)->first();
@@ -1433,23 +1980,21 @@ class ContractsController extends Controller
             }
         }
 
-        // Handle HEC Member approval - they review and rate (required)
+        // Handle HEC Member approval - review and approve/reject (no rating required)
         if ($currentStep === 'HEC Member') {
-            // HEC must provide a rating (1-4 scale, same as Line Manager)
             $request->validate([
-                'hec_rating' => 'required|integer|min:1|max:4',
                 'hec_comments' => 'nullable|string|max:2000',
             ]);
 
-            $contract->hec_rating = $request->hec_rating;
-            // Average the ratings
-            $ratings = array_filter([$contract->line_manager_rating, $contract->hec_rating]);
-            $contract->evaluation_score = count($ratings) > 0 ? array_sum($ratings) / count($ratings) : $contract->line_manager_rating;
+            // Keep evaluation score from line manager rating alone
+            if ($contract->line_manager_rating) {
+                $contract->evaluation_score = $contract->line_manager_rating;
+            }
 
             // Check if this is a renewal
             $isRenewal = $contract->renewal_status === 'pending' || $contract->lifecycle_stage === 'renewal';
 
-            $remark = ($isRenewal ? 'Contract renewal' : 'Contract') . ' reviewed and rated (' . $request->hec_rating . '/4) by HEC Member ' . Auth::user()->name;
+            $remark = ($isRenewal ? 'Contract renewal' : 'Contract') . ' approved by HEC Member ' . Auth::user()->name;
             if ($request->hec_comments) {
                 $remark .= '. Comments: ' . $request->hec_comments;
             }
@@ -1569,9 +2114,23 @@ class ContractsController extends Controller
                 // Handle Terms of Reference file upload for renewal
                 if ($request->hasFile('terms_of_reference')) {
                     $file = $request->file('terms_of_reference');
-                    $filename = 'tor_' . time() . '_' . $file->getClientOriginalName();
-                    $filePath = $file->storeAs('contracts/tor', $filename, 'public');
-                    $newContract->terms_of_reference_path = '/storage/' . $filePath;
+                    if ($file->isValid()) {
+                        if (!Storage::disk('public')->exists('contracts/tor')) {
+                            Storage::disk('public')->makeDirectory('contracts/tor');
+                        }
+                        $filename = 'tor_' . time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file->getClientOriginalName());
+                        $filePath = $file->storeAs('contracts/tor', $filename, 'public');
+                        if ($filePath !== false) {
+                            $newContract->terms_of_reference_path = '/storage/' . $filePath;
+                        } else {
+                            Log::error('Renewal TOR upload: storeAs returned false', [
+                                'storage_path' => storage_path('app/public/contracts/tor'),
+                                'original_name' => $file->getClientOriginalName(),
+                            ]);
+                        }
+                    } else {
+                        Log::error('Renewal TOR upload: Invalid file', ['error' => $file->getErrorMessage()]);
+                    }
                 } else {
                     // Copy TOR from original contract if no new one is uploaded
                     $newContract->terms_of_reference_path = $contract->terms_of_reference_path;
@@ -1628,6 +2187,19 @@ class ContractsController extends Controller
 
                 $contract->save();
 
+                // Notify contract creator that renewal is active
+                try {
+                    $creator = $newContract->created_by ? User::find($newContract->created_by) : null;
+                    if ($creator && $creator->email) {
+                        Mail::to($creator->email)->queue(new ContractAddedMail(
+                            $newContract, $creator,
+                            'Your contract renewal has been finalized and is now Active (Term ' . $renewalTermNumber . ').'
+                        ));
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Failed to send renewal activation email: ' . $e->getMessage());
+                }
+
                 // Return early - don't continue with the rest of the function
                 return redirect()->route('procurements.contracts.index')
                     ->with('success', 'Contract renewal finalized! New contract (Term ' . $renewalTermNumber . ') has been created and activated.');
@@ -1662,9 +2234,23 @@ class ContractsController extends Controller
                 // Handle Terms of Reference file upload
                 if ($request->hasFile('terms_of_reference')) {
                     $file = $request->file('terms_of_reference');
-                    $filename = 'tor_' . time() . '_' . $file->getClientOriginalName();
-                    $filePath = $file->storeAs('contracts/tor', $filename, 'public');
-                    $contract->terms_of_reference_path = '/storage/' . $filePath;
+                    if ($file->isValid()) {
+                        if (!Storage::disk('public')->exists('contracts/tor')) {
+                            Storage::disk('public')->makeDirectory('contracts/tor');
+                        }
+                        $filename = 'tor_' . time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file->getClientOriginalName());
+                        $filePath = $file->storeAs('contracts/tor', $filename, 'public');
+                        if ($filePath !== false) {
+                            $contract->terms_of_reference_path = '/storage/' . $filePath;
+                        } else {
+                            Log::error('Procurement TOR upload: storeAs returned false', [
+                                'storage_path' => storage_path('app/public/contracts/tor'),
+                                'original_name' => $file->getClientOriginalName(),
+                            ]);
+                        }
+                    } else {
+                        Log::error('Procurement TOR upload: Invalid file', ['error' => $file->getErrorMessage()]);
+                    }
                 }
 
                 // Procurement completes the process - contract becomes active
@@ -1677,6 +2263,29 @@ class ContractsController extends Controller
                 $workflow->work_flow_status = 'approved';
                 $workflow->work_flow_completed = 1;
                 $workflow->save();
+
+                // Notify contract creator that contract is now active
+                try {
+                    $creator = $contract->created_by ? User::find($contract->created_by) : null;
+                    if ($creator && $creator->email) {
+                        Mail::to($creator->email)->queue(new ContractAddedMail(
+                            $contract, $creator,
+                            'Your contract has been fully approved and is now Active.'
+                        ));
+                    }
+                    // Also notify the line manager
+                    $lineManager = $contract->department_id
+                        ? User::role('line-manager')->whereHas('departments', fn($q) => $q->where('departments.id', $contract->department_id))->first()
+                        : null;
+                    if ($lineManager && $lineManager->email && (!$creator || $lineManager->id !== $creator->id)) {
+                        Mail::to($lineManager->email)->queue(new ContractAddedMail(
+                            $contract, $lineManager,
+                            'Contract has been fully approved and is now Active.'
+                        ));
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Failed to send contract activation email: ' . $e->getMessage());
+                }
             }
         }
 
@@ -1805,6 +2414,29 @@ class ContractsController extends Controller
                 ? 'Contract renewal rejected and terminated successfully!'
                 : 'Contract rejected successfully!';
 
+            // Notify contract creator about rejection
+            try {
+                $creator = $contract->created_by ? User::find($contract->created_by) : null;
+                if ($creator && $creator->email) {
+                    Mail::to($creator->email)->queue(new ContractAddedMail(
+                        $contract, $creator,
+                        'Your contract has been rejected by ' . Auth::user()->name . '. Reason: ' . $request->rejection_reason
+                    ));
+                }
+                // Also notify the line manager if different from creator
+                $lineManager = $contract->department_id
+                    ? User::role('line-manager')->whereHas('departments', fn($q) => $q->where('departments.id', $contract->department_id))->first()
+                    : null;
+                if ($lineManager && $lineManager->email && (!$creator || $lineManager->id !== $creator->id)) {
+                    Mail::to($lineManager->email)->queue(new ContractAddedMail(
+                        $contract, $lineManager,
+                        'Contract has been rejected by ' . Auth::user()->name . '. Reason: ' . $request->rejection_reason
+                    ));
+                }
+            } catch (\Exception $e) {
+                Log::error('Failed to send contract rejection email: ' . $e->getMessage());
+            }
+
             return redirect()->route('procurements.contracts.index')
                 ->with('success', $message);
         }
@@ -1837,17 +2469,17 @@ class ContractsController extends Controller
                 ->withErrors('You can only renew contracts from your own department.');
         }
 
-        // Check if contract is expired or expiring soon (within 30 days)
-        $isExpired = $contract->status == 'expired';
-        $isExpiringSoon = false;
-        if ($contract->end_date) {
-            $daysUntilExpiry = Carbon::parse($contract->end_date)->diffInDays(Carbon::now(), false);
-            $isExpiringSoon = $daysUntilExpiry <= 30 && $daysUntilExpiry >= 0;
-        }
+        // Prevent initiating duplicate renewals for the same contract
+        $renewalAlreadyInProgress =
+            ($contract->renewal_status === 'pending') ||
+            ($contract->lifecycle_stage === 'renewal') ||
+            ($contract->approval_stage === 'line_manager') ||
+            ($contract->approval_stage === 'hec') ||
+            ($contract->approval_stage === 'procurement');
 
-        if (!$isExpired && !$isExpiringSoon) {
+        if ($renewalAlreadyInProgress) {
             return redirect()->route('procurements.contracts.index')
-                ->withErrors('Only expired contracts or contracts expiring within 30 days can be renewed.');
+                ->withErrors('A renewal process for this contract is already in progress.');
         }
 
         // Validation - rating only required if Line Manager initiates
@@ -1856,7 +2488,7 @@ class ContractsController extends Controller
         ];
 
         if ($isLineManager) {
-            $validationRules['contract_rating'] = 'required|integer|min:1|max:4';
+            $validationRules['contract_rating'] = 'required|integer|min:1|max:5';
         }
 
         $request->validate($validationRules);
@@ -1951,7 +2583,7 @@ class ContractsController extends Controller
                 $hec = Hec::find($department->hec_id);
                 if ($hec) {
                     $hecLevelName = strtoupper(trim($hec->hec_level_name));
-                    $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CRHDO' => 'crhdo'];
+                    $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
                     $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
 
                     $hecMember = User::role($roleSlug)->first();
@@ -2017,6 +2649,43 @@ class ContractsController extends Controller
                     ->withErrors('Failed: No HEC configuration found for this department. Cannot proceed with renewal.');
             }
         }
+    }
+
+    /**
+     * File (archive) an expired contract for record-keeping when not renewing.
+     * Only Procurement Officers (and super-admin) can file contracts.
+     */
+    public function fileContract($id)
+    {
+        $contract = CcbrtContract::findOrFail($id);
+        $user = Auth::user();
+
+        if (!$user->hasAnyRole(['procurement-officer', 'super-admin'])) {
+            return redirect()->route('procurements.contracts.index')
+                ->with('error', 'Only Procurement Officers can file contracts.');
+        }
+
+        // Only allow filing expired contracts (end_date in the past or status expired)
+        $today = Carbon::now();
+        $isExpired = (strtolower($contract->status ?? '') === 'expired')
+            || ($contract->end_date && Carbon::parse($contract->end_date)->lt($today));
+
+        if (!$isExpired) {
+            return redirect()->route('procurements.contracts.index')
+                ->with('error', 'Only expired contracts can be filed. This contract is not yet expired.');
+        }
+
+        if ($contract->is_archived ?? false) {
+            return redirect()->route('procurements.contracts.index')
+                ->with('info', 'This contract is already filed.');
+        }
+
+        $contract->is_archived = true;
+        $contract->lifecycle_stage = $contract->lifecycle_stage ?? 'close';
+        $contract->save();
+
+        return redirect()->route('procurements.contracts.index', ['view' => 'archived'])
+            ->with('success', 'Contract has been filed and moved to Archived Contracts.');
     }
 
     /**
@@ -2110,18 +2779,7 @@ class ContractsController extends Controller
         // Calculate days until expiry (positive if future, negative if past)
         $daysUntilExpiry = $today->diffInDays($endDate, false);
 
-        // Allow contracts expiring within 30 days (0 to 30 days from now)
-        // Also allow contracts that expired recently (within last 7 days) for reminders
-        if ($daysUntilExpiry > 30 || $daysUntilExpiry < -7) {
-            Log::warning('Contract reminder attempted for contract outside valid range', [
-                'contract_id' => $contract->id,
-                'days_until_expiry' => $daysUntilExpiry,
-                'end_date' => $endDate->format('Y-m-d'),
-                'today' => $today->format('Y-m-d')
-            ]);
-            return redirect()->route('procurements.contracts.index')
-                ->withErrors('This contract is not expiring within 30 days or has expired more than 7 days ago. Days until expiry: ' . $daysUntilExpiry);
-        }
+        // No date restriction — Procurement Officer can send reminders at any time
 
         // Get Line Manager for the contract's department
         if (!$contract->department) {
@@ -2142,6 +2800,7 @@ class ContractsController extends Controller
         $sendToHEC = $request->has('send_to_hec') && $request->send_to_hec == '1';
         $remindersSent = 0;
         $recipients = [];
+        $lastError = null;
 
         // Send to Line Manager (always sent)
         $lineManagers = User::role('line-manager')
@@ -2183,39 +2842,12 @@ class ContractsController extends Controller
 
                 // Format message based on whether contract is expiring or expired
                 if ($daysUntilExpiry >= 0) {
-                    $message = "URGENT REMINDER: Contract '{$contract->title}' is expiring in {$daysUntilExpiry} days (Expiry Date: {$endDate->format('Y-m-d')}). Please review and take appropriate action (Renew, Terminate, or Hold).";
+                    $message = "Contract '{$contract->title}' is expiring in {$daysUntilExpiry} days (Expiry Date: {$endDate->format('Y-m-d')}). Please review and take appropriate action (Renew, Terminate, or Hold).";
                 } else {
-                    $message = "URGENT REMINDER: Contract '{$contract->title}' expired " . abs($daysUntilExpiry) . " days ago (Expiry Date: {$endDate->format('Y-m-d')}). Please review and take appropriate action (Renew, Terminate, or Hold).";
+                    $message = "Contract '{$contract->title}' ended " . abs($daysUntilExpiry) . " days ago (End Date: {$endDate->format('Y-m-d')}). Please review and take appropriate action (Renew, Terminate, or Hold).";
                 }
 
-                // Send email immediately for reminders (time-sensitive)
-                // Use EXACT same method as settings test email for reliability
-                $emailBody = $message . "\n\n";
-                $emailBody .= "Contract Details:\n";
-                $emailBody .= "Title: {$contract->title}\n";
-                if ($contract->vendor) {
-                    $emailBody .= "Vendor: {$contract->vendor->name}\n";
-                }
-                if ($contract->department) {
-                    $emailBody .= "Department: {$contract->department->dept_name}\n";
-                }
-                if ($contract->start_date) {
-                    $emailBody .= "Start Date: " . Carbon::parse($contract->start_date)->format('Y-m-d') . "\n";
-                }
-                $emailBody .= "End Date: {$endDate->format('Y-m-d')}\n";
-                if ($contract->value) {
-                    $emailBody .= "Value: " . number_format($contract->value, 2) . "\n";
-                }
-                $emailBody .= "\nPlease review this contract and take appropriate action (Renew, Terminate, or Hold).\n\n";
-                $emailBody .= "View Contract: " . route('procurements.contracts.index') . "\n\n";
-                $emailBody .= "Thanks,\n" . config('app.name');
-
-                // Use EXACT same Mail::raw() pattern as SettingsController::sendTestEmail()
-                Mail::raw($emailBody, function ($message) use ($lineManager, $contract) {
-                    $message->to($lineManager->email)
-                        ->subject('Contract Renewal Reminder: ' . $contract->title);
-                });
-
+                Mail::to($lineManager->email)->send(new ContractsReport(collect([$contract]), $message));
                 $remindersSent++;
                 $recipients[] = 'Line Manager: ' . ($lineManager->fname ?? '') . ' ' . ($lineManager->lname ?? '') . ' (' . $lineManager->email . ')';
 
@@ -2235,15 +2867,14 @@ class ContractsController extends Controller
                     ]
                 ]);
             } catch (\Exception $e) {
+                $lastError = $e->getMessage();
                 Log::error('Failed to send contract reminder to Line Manager', [
                     'contract_id' => $contract->id,
                     'line_manager_email' => $lineManager->email ?? 'NULL',
                     'line_manager_id' => $lineManager->id,
                     'error' => $e->getMessage(),
                     'error_class' => get_class($e),
-                    'trace' => $e->getTraceAsString()
                 ]);
-                // Don't increment remindersSent if email failed
             }
         }
 
@@ -2252,43 +2883,16 @@ class ContractsController extends Controller
             $hec = Hec::find($contract->department->hec_id);
             if ($hec) {
                 $hecLevelName = strtoupper(trim($hec->hec_level_name));
-                $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CRHDO' => 'crhdo'];
+                $roleMap = ['COO' => 'coo', 'CFO' => 'cfo', 'CMS' => 'cms', 'CCDRO' => 'ccdro'];
                 $roleSlug = $roleMap[$hecLevelName] ?? 'cms';
 
                 $hecMembers = User::role($roleSlug)->where('status', 'active')->get();
 
                 foreach ($hecMembers as $hecMember) {
                     try {
-                        $message = "URGENT REMINDER: Contract '{$contract->title}' from {$contract->department->dept_name} is expiring in {$daysUntilExpiry} days (Expiry Date: {$endDate->format('Y-m-d')}). Line Manager has been notified. Please monitor and ensure appropriate action is taken (Renew, Terminate, or Hold).";
+                        $message = "Contract '{$contract->title}' from {$contract->department->dept_name} is expiring in {$daysUntilExpiry} days (End Date: {$endDate->format('Y-m-d')}). Line Manager has been notified. Please monitor and ensure appropriate action is taken (Renew, Terminate, or Hold).";
 
-                        // Send email immediately for reminders (time-sensitive)
-                        // Use EXACT same method as settings test email for reliability
-                        $emailBody = $message . "\n\n";
-                        $emailBody .= "Contract Details:\n";
-                        $emailBody .= "Title: {$contract->title}\n";
-                        if ($contract->vendor) {
-                            $emailBody .= "Vendor: {$contract->vendor->name}\n";
-                        }
-                        if ($contract->department) {
-                            $emailBody .= "Department: {$contract->department->dept_name}\n";
-                        }
-                        if ($contract->start_date) {
-                            $emailBody .= "Start Date: " . Carbon::parse($contract->start_date)->format('Y-m-d') . "\n";
-                        }
-                        $emailBody .= "End Date: {$endDate->format('Y-m-d')}\n";
-                        if ($contract->value) {
-                            $emailBody .= "Value: " . number_format($contract->value, 2) . "\n";
-                        }
-                        $emailBody .= "\nPlease review this contract and take appropriate action (Renew, Terminate, or Hold).\n\n";
-                        $emailBody .= "View Contract: " . route('procurements.contracts.index') . "\n\n";
-                        $emailBody .= "Thanks,\n" . config('app.name');
-
-                        // Use EXACT same Mail::raw() pattern as SettingsController::sendTestEmail()
-                        Mail::raw($emailBody, function ($message) use ($hecMember, $contract) {
-                            $message->to($hecMember->email)
-                                ->subject('Contract Renewal Reminder: ' . $contract->title);
-                        });
-
+                        Mail::to($hecMember->email)->send(new ContractsReport(collect([$contract]), $message));
                         $remindersSent++;
                         $recipients[] = 'HEC Member: ' . $hecMember->email;
 
@@ -2329,16 +2933,17 @@ class ContractsController extends Controller
             return redirect()->route('procurements.contracts.index')
                 ->with('success', $successMessage);
         } else {
-            $errorMessage = 'Failed to send reminder. No Line Manager found or email sending failed. Please check logs.';
+            $errorMessage = $lastError
+                ? 'Mail error: ' . $lastError
+                : 'No Line Manager found for this department, or all email addresses are invalid.';
 
-            Log::error('No reminders were sent - check Line Manager assignment', [
+            Log::error('No reminders were sent', [
                 'contract_id' => $contract->id,
                 'contract_department_id' => $contract->department_id,
                 'line_managers_found' => $lineManagers->count(),
-                'send_to_hec' => $sendToHEC
+                'last_error' => $lastError,
             ]);
 
-            // Return JSON for AJAX requests, otherwise redirect
             if ($request->wantsJson() || $request->ajax()) {
                 return response()->json([
                     'success' => false,
@@ -2416,7 +3021,7 @@ class ContractsController extends Controller
                         ];
                     });
 
-                    $message = "URGENT REMINDER: You have {$contracts->count()} contract(s) expiring within 30 days. Please review and take appropriate action (Renew, Terminate, or Hold) for each contract.";
+                    $message = "You have {$contracts->count()} contract(s) expiring within 30 days. Please review and take appropriate action (Renew, Terminate, or Hold) for each contract.";
 
                     Mail::to($lineManager->email)->queue(new ContractsReport(
                         $contracts,
@@ -2461,6 +3066,33 @@ class ContractsController extends Controller
     }
 
     /**
+     * Get the Line Manager for a department
+     */
+    private function getDepartmentLineManager($departmentId)
+    {
+        if (!$departmentId) {
+            return 'N/A';
+        }
+
+        try {
+            $lineManager = User::whereHas('roles', function ($query) {
+                $query->where('name', 'line-manager');
+            })
+                ->where('deptId', $departmentId)
+                ->where('status', 'active')
+                ->first();
+
+            if ($lineManager) {
+                return trim(($lineManager->fname ?? '') . ' ' . ($lineManager->mname ?? '') . ' ' . ($lineManager->lname ?? ''));
+            }
+
+            return 'N/A';
+        } catch (\Exception $e) {
+            return 'N/A';
+        }
+    }
+
+    /**
      * Export contracts to CSV with detailed information
      */
     public function export(Request $request)
@@ -2486,7 +3118,7 @@ class ContractsController extends Controller
         $contractsQuery = CcbrtContract::with($relationships);
 
         // Apply department filter if user is Line Manager or HEC member
-        if ($user->hasRole('line-manager') || $user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo'])) {
+        if ($user->hasRole('line-manager') || $user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             if (!empty($allowedDepartmentIds)) {
                 $contractsQuery->whereIn('department_id', $allowedDepartmentIds);
             } else {
@@ -2551,7 +3183,7 @@ class ContractsController extends Controller
 
         // Filter pending contracts
         $pendingHecReviewContracts = collect();
-        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo'])) {
+        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             $pendingHecReviewContracts = $contracts->filter(function ($contract) use ($user) {
                 return $contract->approval_stage === 'hec'
                     && $contract->current_approver_id == $user->id
@@ -2588,15 +3220,6 @@ class ContractsController extends Controller
                 break;
             case 'expiring':
                 $contractsToExport = $soonToExpireContracts;
-                break;
-            case 'pending-hec':
-                $contractsToExport = $pendingHecReviewContracts;
-                break;
-            case 'pending-line-manager':
-                $contractsToExport = $pendingLineManagerReviewContracts;
-                break;
-            case 'pending-procurement':
-                $contractsToExport = $pendingProcurementReviewContracts;
                 break;
             default:
                 $contractsToExport = $activeContracts;
@@ -2636,7 +3259,6 @@ class ContractsController extends Controller
                 'Entity',
                 'Department',
                 'Contract Owner',
-                'Created By',
                 'Created At',
                 'Evaluation Score',
                 'Line Manager Rating',
@@ -2673,8 +3295,7 @@ class ContractsController extends Controller
                     $contract->vendor->address ?? 'N/A',
                     $contract->division->name ?? 'N/A',
                     $contract->department->dept_name ?? 'N/A',
-                    (method_exists(CcbrtContract::class, 'contractManager') && $contract->relationLoaded('contractManager') && $contract->contractManager) ? trim(($contract->contractManager->fname ?? '') . ' ' . ($contract->contractManager->mname ?? '') . ' ' . ($contract->contractManager->lname ?? '')) : 'N/A',
-                    $contract->creator ? trim(($contract->creator->fname ?? '') . ' ' . ($contract->creator->mname ?? '') . ' ' . ($contract->creator->lname ?? '')) : 'N/A',
+                    $this->getDepartmentLineManager($contract->department_id),
                     $contract->created_at ? Carbon::parse($contract->created_at)->format('Y-m-d H:i:s') : 'N/A',
                     $contract->evaluation_score ? number_format($contract->evaluation_score, 2) : 'N/A',
                     $contract->line_manager_rating ? number_format($contract->line_manager_rating, 1) : 'N/A',
@@ -2686,5 +3307,96 @@ class ContractsController extends Controller
         };
 
         return response()->stream($callback, 200, $headers);
+    }
+
+    /**
+     * Check if PHP silently rejected the upload due to upload_max_filesize or post_max_size limits.
+     * Returns an error message string if limits were exceeded, or null if OK.
+     */
+    private function checkPhpUploadLimits(Request $request): ?string
+    {
+        // If the request content length exceeds post_max_size, PHP drops ALL post data silently
+        $contentLength = $request->server('CONTENT_LENGTH');
+        $postMaxSize = $this->parsePhpSize(ini_get('post_max_size'));
+        $uploadMaxSize = $this->parsePhpSize(ini_get('upload_max_filesize'));
+
+        if ($contentLength && $postMaxSize && $contentLength > $postMaxSize) {
+            Log::error('Contract upload: POST data exceeds post_max_size', [
+                'content_length' => $contentLength,
+                'post_max_size' => $postMaxSize,
+                'post_max_size_ini' => ini_get('post_max_size'),
+            ]);
+            return 'The uploaded file is too large for the server. The server allows a maximum of ' . ini_get('post_max_size') . '. Please ask IT to increase post_max_size in php.ini.';
+        }
+
+        // Check individual file errors
+        foreach ($request->allFiles() as $key => $file) {
+            if (is_array($file)) continue;
+            $error = $file->getError();
+            if ($error === UPLOAD_ERR_INI_SIZE) {
+                Log::error("Contract upload: File exceeds upload_max_filesize", [
+                    'field' => $key,
+                    'upload_max_filesize' => ini_get('upload_max_filesize'),
+                ]);
+                return 'The uploaded file exceeds the server limit of ' . ini_get('upload_max_filesize') . '. Please ask IT to increase upload_max_filesize in php.ini.';
+            }
+            if ($error === UPLOAD_ERR_FORM_SIZE) {
+                return 'The uploaded file exceeds the maximum size allowed by the form.';
+            }
+            if ($error === UPLOAD_ERR_NO_TMP_DIR) {
+                Log::error('Contract upload: Missing temp directory');
+                return 'Server configuration error: No temporary upload directory. Please contact IT.';
+            }
+            if ($error === UPLOAD_ERR_CANT_WRITE) {
+                Log::error('Contract upload: Cannot write to temp directory');
+                return 'Server error: Cannot write file to temporary directory. Please contact IT.';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse PHP size string (e.g. '2M', '128K', '1G') to bytes.
+     */
+    private function parsePhpSize(string $size): int
+    {
+        $size = trim($size);
+        $unit = strtolower(substr($size, -1));
+        $value = (int) $size;
+        switch ($unit) {
+            case 'g': $value *= 1024;
+            case 'm': $value *= 1024;
+            case 'k': $value *= 1024;
+        }
+        return $value;
+    }
+
+    /**
+     * Log detailed upload debug info to help diagnose file upload failures on live server.
+     */
+    private function logUploadDebugInfo(Request $request, array $fileFields): void
+    {
+        foreach ($fileFields as $field) {
+            if ($request->hasFile($field)) {
+                $file = $request->file($field);
+                Log::info("Contract upload debug [{$field}]", [
+                    'original_name' => $file->getClientOriginalName(),
+                    'client_mime_type' => $file->getClientMimeType(),
+                    'detected_mime_type' => $file->getMimeType(),
+                    'extension' => $file->getClientOriginalExtension(),
+                    'size_bytes' => $file->getSize(),
+                    'error_code' => $file->getError(),
+                    'error_message' => $file->getErrorMessage(),
+                    'is_valid' => $file->isValid(),
+                    'tmp_path' => $file->getPathname(),
+                    'tmp_exists' => file_exists($file->getPathname()),
+                    'php_upload_max' => ini_get('upload_max_filesize'),
+                    'php_post_max' => ini_get('post_max_size'),
+                    'php_tmp_dir' => ini_get('upload_tmp_dir') ?: sys_get_temp_dir(),
+                    'storage_writable' => is_writable(storage_path('app/public')),
+                ]);
+            }
+        }
     }
 }

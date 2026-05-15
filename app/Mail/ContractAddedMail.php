@@ -41,7 +41,7 @@ class ContractAddedMail extends Mailable implements ShouldQueue
         $this->contract = $contract;
         $this->recipient = $recipient;
         $this->customMessage = $customMessage;
-        $this->onQueue('mail');
+        // Uses default queue so php artisan queue:work processes these (same as Organization Policy)
     }
 
     /**
@@ -51,10 +51,55 @@ class ContractAddedMail extends Mailable implements ShouldQueue
      */
     public function build()
     {
-        return $this->subject('New Contract Added')
+        $subject = $this->resolveSubject();
+
+        return $this->subject($subject)
                     ->view('emails.contract_creation')
                     ->with([
-                        'contract' => $this->contract,
+                        'contract'      => $this->contract,
+                        'recipient'     => $this->recipient,
+                        'customMessage' => $this->customMessage,
                     ]);
+    }
+
+    /**
+     * Derive a context-aware subject line from the custom message or contract state.
+     */
+    private function resolveSubject(): string
+    {
+        $title = $this->contract->title ?? $this->contract->contract_number ?? 'Contract';
+
+        if ($this->customMessage) {
+            $msg = strtolower($this->customMessage);
+
+            if (str_contains($msg, 'renewal has been reviewed') || str_contains($msg, 'review and rate')) {
+                return 'Contract Review Required: ' . $title;
+            }
+            if (str_contains($msg, 'renewal has been finalized') || str_contains($msg, 'now active')) {
+                return 'Contract Activated: ' . $title;
+            }
+            if (str_contains($msg, 'renewal has been initiated') || str_contains($msg, 'renewal initiated')) {
+                return 'Contract Renewal Initiated: ' . $title;
+            }
+            if (str_contains($msg, 'fully approved')) {
+                return 'Contract Approved: ' . $title;
+            }
+            if (str_contains($msg, 'requires your') && str_contains($msg, 'review')) {
+                return 'Contract Review Required: ' . $title;
+            }
+        }
+
+        // Fallback: derive from contract state
+        $stage = $this->contract->approval_stage ?? '';
+        $lifecycle = $this->contract->lifecycle_stage ?? '';
+
+        if ($lifecycle === 'renewal' || ($this->contract->renewal_status ?? '') === 'pending') {
+            return 'Contract Renewal: ' . $title;
+        }
+        if (in_array($stage, ['line_manager', 'hec', 'procurement'])) {
+            return 'Contract Action Required: ' . $title;
+        }
+
+        return 'Contract Notification: ' . $title;
     }
 }

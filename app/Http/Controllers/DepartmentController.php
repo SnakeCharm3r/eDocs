@@ -179,9 +179,9 @@ class DepartmentController extends Controller
 
         $hecs = Hec::all();
         
-        // Get HEC members (users with COO or CMS roles)
+        // Get HEC members (users with COO, CFO, CMS, or CCDRO roles)
         $hecMembers = User::whereHas('roles', function ($query) {
-            $query->whereIn('name', ['coo', 'cms']);
+            $query->whereIn('name', ['coo', 'cfo', 'cms', 'ccdro']);
         })->orderBy('fname')->orderBy('lname')->get();
 
         return view('department.edit', compact('department', 'hecs', 'hecMembers'));

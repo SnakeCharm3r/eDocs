@@ -84,8 +84,9 @@
             padding-bottom: 8px;
         }
         .info-row {
-            display: flex;
-            justify-content: space-between;
+            display: table;
+            width: 100%;
+            table-layout: fixed;
             padding: 10px 0;
             border-bottom: 1px solid #e9ecef;
         }
@@ -95,12 +96,16 @@
         .info-label {
             font-weight: 600;
             color: #555;
-            flex: 1;
+            display: table-cell;
+            width: 40%;
+            vertical-align: top;
         }
         .info-value {
             color: #333;
-            flex: 1;
+            display: table-cell;
+            width: 60%;
             text-align: right;
+            vertical-align: top;
             font-weight: 500;
         }
         .status-badge {
@@ -198,11 +203,13 @@
                 font-size: 20px;
             }
             .info-row {
-                flex-direction: column;
+                display: block;
             }
             .info-value {
+                display: block;
+                width: 100%;
                 text-align: left;
-                margin-top: 5px;
+                margin-top: 4px;
             }
             .action-button {
                 display: block;

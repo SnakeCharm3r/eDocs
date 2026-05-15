@@ -19,6 +19,7 @@ class OnCallRequest extends Model
         'total_hours',
         'total_amount',
         'total_amount_payable',
+        'rate_used', // Store the rate used at creation time
         'worked_days', // Include worked_days as fillable for JSON storage
         'reason',
         'description',
@@ -37,6 +38,7 @@ class OnCallRequest extends Model
         'total_hours' => 'decimal:2',
         'total_amount' => 'decimal:2',
         'total_amount_payable' => 'decimal:2',
+        'rate_used' => 'decimal:2',
         'education_level' => 'string',
         'status' => 'string',
         'has_special_task' => 'boolean',

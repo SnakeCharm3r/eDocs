@@ -47,25 +47,16 @@
             margin-bottom: 20px;
         }
 
-        .alert-banner {
-            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
-            border-left: 4px solid #ffc107;
-            border-radius: 8px;
-            padding: 18px 20px;
-            margin: 25px 0;
-            text-align: center;
+        .highlight {
+            background-color: #e7f3ff;
+            border-left: 3px solid #007A33;
+            padding: 12px 15px;
+            margin: 15px 0;
+            border-radius: 4px;
         }
 
-        .alert-banner strong {
-            display: block;
-            color: #856404;
-            font-size: 18px;
-            margin-bottom: 5px;
-        }
-
-        .alert-banner span {
-            color: #856404;
-            font-size: 14px;
+        .highlight strong {
+            color: #007A33;
         }
 
         .info-card {
@@ -88,8 +79,9 @@
         }
 
         .info-row {
-            display: flex;
-            justify-content: space-between;
+            display: table;
+            width: 100%;
+            table-layout: fixed;
             padding: 10px 0;
             border-bottom: 1px solid #e9ecef;
         }
@@ -101,13 +93,17 @@
         .info-label {
             font-weight: 600;
             color: #555;
-            flex: 1;
+            display: table-cell;
+            width: 40%;
+            vertical-align: top;
         }
 
         .info-value {
             color: #333;
-            flex: 1;
+            display: table-cell;
+            width: 60%;
             text-align: right;
+            vertical-align: top;
             font-weight: 500;
         }
 
@@ -128,27 +124,21 @@
             background-color: #007A33;
             color: #ffffff !important;
             text-decoration: none;
-            padding: 14px 35px;
+            padding: 12px 30px;
             border-radius: 6px;
             font-weight: 600;
             font-size: 16px;
             text-align: center;
             margin: 25px 0;
             transition: background-color 0.3s;
-            box-shadow: 0 2px 4px rgba(0, 122, 51, 0.2);
         }
 
         .action-button:hover {
             background-color: #005a25;
-            box-shadow: 0 4px 8px rgba(0, 122, 51, 0.3);
         }
 
         .button-container {
             text-align: center;
-            background-color: #f8f9fa;
-            padding: 25px;
-            border-radius: 8px;
-            margin: 25px 0;
         }
 
         .signature {
@@ -179,15 +169,6 @@
             margin-top: 10px;
         }
 
-        .urgency-note {
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            border-radius: 6px;
-            padding: 12px 15px;
-            margin: 20px 0;
-            font-size: 14px;
-            color: #856404;
-        }
 
         @media only screen and (max-width: 600px) {
             .content {
@@ -203,12 +184,14 @@
             }
 
             .info-row {
-                flex-direction: column;
+                display: block;
             }
 
             .info-value {
+                display: block;
+                width: 100%;
                 text-align: left;
-                margin-top: 5px;
+                margin-top: 4px;
             }
 
             .action-button {
@@ -223,7 +206,7 @@
 <body>
     <div class="email-wrapper">
         <div class="header">
-            <h1>⏰ On-Call Claim Awaiting Approval</h1>
+            <h1>📋 On-Call Claim Approval Request</h1>
         </div>
 
         <div class="content">
@@ -238,15 +221,9 @@
                 <p>Dear <strong>{{ $approverName }}</strong>,</p>
             </div>
 
-            <div class="alert-banner">
-                <strong>🔔 New On-Call Claim Requires Your Review</strong>
-                <span>Please review and take action on this pending request</span>
-            </div>
-
             <div class="highlight">
                 <p style="margin: 0;">
-                    <strong>{{ $submitterName }}</strong> has submitted an on-call claim for 
-                    <strong>{{ $onCallRequest->locum_month }} {{ $year }}</strong>
+                    <strong>{{ $submitterName }}</strong> has submitted an on-call claim that requires your approval.
                 </p>
             </div>
 
@@ -280,13 +257,9 @@
                 </div>
             </div>
 
-            <div class="urgency-note">
-                <strong>⏱️ Action Required:</strong> This request is pending your approval. Please review the details and take appropriate action.
-            </div>
-
             <div class="button-container">
                 <a href="{{ $approvalUrl }}" class="action-button" target="_blank">
-                    👉 Review & Approve in e-Docs
+                    View Full Details in e-Docs
                 </a>
             </div>
 
@@ -295,7 +268,7 @@
                 <p><strong>CCBRT e-Docs System</strong></p>
             </div>
 
-            <div class="footer-text" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e9ecef; font-size: 12px; color: #888;">
+            <div class="footer-text" style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #666; font-size: 14px;">
                 <p>This is an automated notification. Please do not reply to this email.</p>
             </div>
         </div>

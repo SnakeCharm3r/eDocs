@@ -73,11 +73,36 @@
 
                     </div>
                     <div class="page-tools d-flex gap-2">
-                        @if (!empty($agreement))
-                            <a href="{{ route('locum-agreements.view') }}" class="btn btn-outline-secondary btn-sm">
-                                <i class="fas fa-file-contract me-1"></i> Agreement
-                            </a>
-                        @endif
+                        @php
+                            $agreementBadgeClass = '';
+                            if (!empty($agreement) && !empty($locumAgreementStatus)) {
+                                $agreementBadgeClass = 'bg-success';
+                                if (str_starts_with($locumAgreementStatus, 'Expired')) {
+                                    $agreementBadgeClass = 'bg-danger';
+                                } elseif (
+                                    str_starts_with($locumAgreementStatus, 'Valid for claiming') ||
+                                    str_starts_with($locumAgreementStatus, 'Use until')
+                                ) {
+                                    $agreementBadgeClass = 'bg-success';
+                                } elseif (
+                                    str_starts_with($locumAgreementStatus, 'Expires in') ||
+                                    str_starts_with($locumAgreementStatus, 'Expiring soon')
+                                ) {
+                                    $agreementBadgeClass = 'bg-warning text-dark';
+                                } elseif (str_starts_with($locumAgreementStatus, 'Pending')) {
+                                    $agreementBadgeClass = 'bg-info';
+                                }
+                            }
+                        @endphp
+                        <a href="{{ route('locum-agreements.view') }}"
+                            class="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-2"
+                            title="View locum agreements{{ !empty($locumAgreementStatus) ? ' — ' . $locumAgreementStatus : '' }}">
+                            <i class="fas fa-file-contract"></i>
+                            <span>My Agreements</span>
+                            @if (!empty($agreement) && !empty($locumAgreementStatus))
+                                <span class="badge {{ $agreementBadgeClass }} text-nowrap">{{ $locumAgreementStatus }}</span>
+                            @endif
+                        </a>
                         {{-- @if ($user && ($user->hasRole('incharge') || $user->hasRole('in-charge')))
                             <a href="{{ route('locum-requests.create-for-staff') }}" class="btn btn-primary btn-sm">
                                 <i class="fas fa-user-plus me-1"></i> Staff
@@ -87,6 +112,12 @@
                             <a href="{{ route('locum-requests.create') }}" class="btn btn-primary btn-sm">
                                 <i class="fas fa-plus me-1"></i> Claim Locum
                             </a>
+                        @endif
+                        @if (!empty($hrApprovedRows) && count($hrApprovedRows) > 0)
+                            <button type="button" class="btn btn-success btn-sm" data-bs-toggle="modal"
+                                data-bs-target="#hrApprovedModal">
+                                <i class="fas fa-file-alt me-1"></i> Report ({{ count($hrApprovedRows) }})
+                            </button>
                         @endif
                     </div>
                 </div>
@@ -99,13 +130,100 @@
                         <a href="{{ route('locum-agreements.index') }}" class="btn btn-sm btn-primary mt-2">Create
                             Agreement</a>
                     </div>
+                @elseif (!empty($agreement) && in_array((int) ($agreement->status ?? -1), [0, 1]))
+                    <div class="alert alert-info mt-3">
+                        <div class="fw-semibold">
+                            <i class="fas fa-clock me-2"></i>Your locum agreement is pending approval.
+                        </div>
+                        <div class="small mt-2">
+                            Your agreement is currently
+                            <strong>{{ (int) $agreement->status === 0 ? 'pending Line Manager approval' : 'pending HR approval' }}</strong>.
+                            You will be able to submit locum claims once it is approved.
+                        </div>
+                        <a href="{{ route('locum-agreements.view') }}" class="btn btn-sm btn-outline-primary mt-2">
+                            <i class="fas fa-eye me-1"></i>View Agreement Status
+                        </a>
+                    </div>
+                @elseif (!empty($allApprovedExpired))
+                    <div class="alert alert-info mt-3">
+                        <div class="fw-semibold">
+                            <i class="fas fa-info-circle me-2"></i>All your approved agreements have expired.
+                        </div>
+                        <div class="small mt-2">
+                            Your previous agreement(s) have passed their end date. Please create a new agreement to continue
+                            submitting locum claims.
+                        </div>
+                        <a href="{{ route('locum-agreements.index') }}" class="btn btn-sm btn-primary mt-2">
+                            <i class="fas fa-plus me-1"></i>Create New Agreement
+                        </a>
+                    </div>
+                @elseif (!empty($expiredButUseUntil) && !empty($expiredAgreementUseUntilDate))
+                    <div class="alert alert-danger mt-3">
+                        <div class="fw-semibold">
+                            <i class="fas fa-times-circle me-2"></i>Your locum agreement has expired.
+                        </div>
+                        <div class="small mt-2">
+                            Please create a new agreement to continue submitting locum claims.
+                        </div>
+                        <a href="{{ route('locum-agreements.index') }}" class="btn btn-sm btn-primary mt-2">
+                            <i class="fas fa-plus me-1"></i>Create New Agreement
+                        </a>
+                    </div>
+                @elseif (!empty($validForClaimingUntilFormatted) && !empty($agreement))
+                    {{-- Admin set "valid until" date; only show when near expiry and not expired --}}
+                    @php
+                        $agreementEndDate = $agreement->end_date
+                            ? \Carbon\Carbon::parse($agreement->end_date)
+                            : \Carbon\Carbon::parse($agreement->created_at)->addYear();
+                        $today = \Carbon\Carbon::today();
+                        $daysUntilExpiration = $today->diffInDays($agreementEndDate, false);
+                        $isNearExpiration = $daysUntilExpiration <= 60 && $daysUntilExpiration > 0;
+                        $isExpired = $agreementEndDate->lt($today);
+                    @endphp
+                    @if ($isNearExpiration && !$isExpired)
+                        <div class="alert alert-info mt-3 d-flex align-items-start">
+                            <i class="fas fa-calendar-check me-2 mt-1"></i>
+                            <div class="flex-grow-1">
+                                <div class="fw-semibold">Valid for claiming (until
+                                    <strong>{{ $validForClaimingUntilFormatted }}</strong>).</div>
+                                <div class="small mt-2">
+                                    You can also request a new locum agreement that will be applicable after this validity end.
+                                </div>
+                                <a href="{{ route('locum-agreements.index') }}" class="btn btn-sm btn-outline-primary mt-2">
+                                    <i class="fas fa-plus me-1"></i>Request New Agreement
+                                </a>
+                            </div>
+                        </div>
+                    @endif
                 @elseif (
                     !empty($agreement->end_date) &&
                         now()->startOfDay()->gt(\Carbon\Carbon::parse($agreement->end_date)->endOfDay()))
                     <div class="alert alert-warning mt-3">
-                        <div class="fw-semibold">Your locum agreement has expired.</div>
-                        <div class="small">Expired on {{ \Carbon\Carbon::parse($agreement->end_date)->format('F j, Y') }}.
-                            Contact HR.</div>
+                        <div class="fw-semibold">
+                            <i class="fas fa-exclamation-triangle me-2"></i>Your current agreement has expired.
+                        </div>
+                        <div class="small mt-2">
+                            Agreement expired on {{ \Carbon\Carbon::parse($agreement->end_date)->format('d M Y') }}. Please
+                            create a new agreement to continue submitting locum claims.
+                        </div>
+                        <a href="{{ route('locum-agreements.index') }}" class="btn btn-sm btn-primary mt-2">
+                            <i class="fas fa-plus me-1"></i>Create New Agreement
+                        </a>
+                    </div>
+                @elseif (!empty($agreementNearExpiry) && !empty($agreementExpiresInDays) && !empty($agreementEndDateFormatted))
+                    <div class="alert alert-warning mt-3 d-flex align-items-start">
+                        <i class="fas fa-exclamation-triangle me-2 mt-1"></i>
+                        <div class="flex-grow-1">
+                            <div class="fw-semibold">Your locum agreement has expired (29 Jan).</div>
+                            <div class="small mt-2">
+                                You may continue to use it for January claims until {{ $agreementEndDateFormatted }}
+                                ({{ $agreementExpiresInDays }} {{ $agreementExpiresInDays === 1 ? 'day' : 'days' }} from
+                                now).
+                            </div>
+                            <a href="{{ route('locum-agreements.index') }}" class="btn btn-sm btn-warning mt-2">
+                                <i class="fas fa-plus me-1"></i>Request New Agreement
+                            </a>
+                        </div>
                     </div>
                 @elseif (strtolower((string) ($user->status ?? '')) !== 'active')
                     <div class="alert alert-warning mt-3">
@@ -205,6 +323,7 @@
                                 <thead class="table-success">
                                     <tr>
                                         <th>Month</th>
+                                        <th>Applicable year</th>
                                         <th>Days</th>
                                         <th>Amount (TZS)</th>
                                         <th>Status</th>
@@ -225,10 +344,10 @@
                                             }
                                         @endphp
                                         <tr data-status="{{ $row['status_label'] }}"
-                                            @if ($isRejected && !empty($row['rejected_at']))
-                                                data-rejected-at="{{ $row['rejected_at'] }}"
-                                            @endif>
+                                            @if ($isRejected && !empty($row['rejected_at'])) data-rejected-at="{{ $row['rejected_at'] }}" @endif>
                                             <td>{{ $row['month_label'] }}</td>
+                                            <td title="{{ $row['agreement_period'] ?? '—' }}">
+                                                {{ $row['applicable_year'] ?? '—' }}</td>
                                             <td>{{ $row['days'] }}</td>
                                             <td>{{ $row['amount_fmt'] }}</td>
                                             <td>
@@ -288,7 +407,8 @@
     </div>
 
     {{-- Rejection Modal --}}
-    <div class="modal fade" id="rejectionModal" tabindex="-1" aria-labelledby="rejectionModalLabel" aria-hidden="true">
+    <div class="modal fade" id="rejectionModal" tabindex="-1" aria-labelledby="rejectionModalLabel"
+        aria-hidden="true">
         <div class="modal-dialog modal-md modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header bg-light">
@@ -319,7 +439,9 @@
                     <hr class="my-3">
                     <div class="mb-2">
                         <div class="small text-muted mb-2 fw-semibold">Reason for Rejection</div>
-                        <div id="rejReason" class="p-3 bg-light border rounded" style="min-height: 80px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.95rem; line-height: 1.6; color: #333;">—</div>
+                        <div id="rejReason" class="p-3 bg-light border rounded"
+                            style="min-height: 80px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.95rem; line-height: 1.6; color: #333;">
+                            —</div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -329,6 +451,82 @@
             </div>
         </div>
     </div>
+
+    {{-- HR Approved Requests Modal --}}
+    @if (!empty($hrApprovedRows) && count($hrApprovedRows) > 0)
+        <div class="modal fade" id="hrApprovedModal" tabindex="-1" aria-labelledby="hrApprovedModalLabel"
+            aria-hidden="true">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="hrApprovedModalLabel">
+                            <i class="fas fa-file-alt me-2"></i>Locum Report - HR Approved Requests
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        {{-- Year Filter Dropdown --}}
+                        <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+                            <label class="mb-0 fw-semibold">Filter by Year:</label>
+                            <select class="form-select form-select-sm" id="yearFilterSelect"
+                                style="width: auto; min-width: 150px;" onchange="filterByYear(this.value);">
+                                <option value="all" {{ $filterYear == 'all' ? 'selected' : '' }}>All Years</option>
+                                @foreach ($availableYears as $year)
+                                    <option value="{{ $year }}"
+                                        {{ (string) $filterYear == (string) $year ? 'selected' : '' }}>
+                                        {{ $year }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover align-middle" id="hrApprovedTable">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Month</th>
+                                        <th>Days</th>
+                                        <th>Amount (TZS)</th>
+                                        <th>Status</th>
+                                        <th>HR Approved At</th>
+                                        <th>Created</th>
+                                        <th>View</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach ($hrApprovedRows as $row)
+                                        <tr>
+                                            <td>{{ $row['month_label'] }}</td>
+                                            <td>{{ $row['days'] }}</td>
+                                            <td>{{ $row['amount_fmt'] }}</td>
+                                            <td>
+                                                <span class="badge status {{ $row['status_class'] }}">
+                                                    {{ $row['status_label'] }}
+                                                </span>
+                                            </td>
+                                            <td>{{ $row['hr_approved_at'] }}</td>
+                                            <td>{{ $row['created_at'] }}</td>
+                                            <td>
+                                                <button class="btn btn-outline-primary btn-sm view-details"
+                                                    data-id="{{ $row['id'] }}"
+                                                    data-url-template="{{ $detailsUrlTemplate }}"
+                                                    data-monthlabel="{{ $row['month_label'] }}"
+                                                    data-worked='@json($row['worked_days'])'>
+                                                    <i class="fas fa-eye"></i> View
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    @endif
 
     {{-- Details Modal (Professional layout: Workflow first, then Worked Days) --}}
     <div class="modal fade" id="detailsModal" tabindex="-1" aria-labelledby="detailsModalLabel" aria-hidden="true">
@@ -340,11 +538,25 @@
                         Locum Request Details
                         <small class="text-muted ms-2" id="detailsMonth">—</small>
                     </h5>
-                    <button type="button" class="btn btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <div class="d-flex align-items-center gap-2">
+                        @if (auth()->user()->hasRole('hr'))
+                            <a href="{{ route('locum_requests.approved') }}" class="btn btn-sm btn-primary"
+                                target="_blank">
+                                <i class="fas fa-list me-1"></i>View All Approved
+                            </a>
+                        @endif
+                        <button type="button" class="btn btn-close" data-bs-dismiss="modal"
+                            aria-label="Close"></button>
+                    </div>
                 </div>
 
                 <div class="modal-body">
 
+                    {{-- Submitted at / Approved at --}}
+                    <div class="d-flex flex-wrap gap-3 mb-2 small">
+                        <span class="text-muted">Submitted at:</span> <span id="details-submitted-at">—</span>
+                        <span class="text-muted">Approved at:</span> <span id="details-approved-at">—</span>
+                    </div>
                     {{-- Summary strip --}}
                     <div class="p-2 border rounded mb-4">
                         <div class="d-flex align-items-center gap-2 mb-1">
@@ -444,19 +656,25 @@
                 if (typeof jQuery !== 'undefined' && typeof $ !== 'undefined') {
                     callback();
                 } else {
-                    setTimeout(function() { waitForJQuery(callback); }, 100);
+                    setTimeout(function() {
+                        waitForJQuery(callback);
+                    }, 100);
                 }
             }
 
             waitForJQuery(function() {
                 $(document).ready(function() {
-                    // Initialize DataTables
+                    // Initialize DataTables for main claims table
                     var dataTable = null;
-                    if ($.fn.DataTable && $('#claimsTable').length && !$.fn.DataTable.isDataTable('#claimsTable')) {
+                    if ($.fn.DataTable && $('#claimsTable').length && !$.fn.DataTable.isDataTable(
+                            '#claimsTable')) {
                         dataTable = $('#claimsTable').DataTable({
                             paging: true,
                             pageLength: 10,
-                            lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
+                            lengthMenu: [
+                                [10, 25, 50, 100, -1],
+                                [10, 25, 50, 100, "All"]
+                            ],
                             searching: true,
                             ordering: true,
                             info: true,
@@ -469,12 +687,71 @@
                                     next: 'Next'
                                 }
                             },
-                            order: [[4, 'desc']], // Sort by Created column descending
-                            columnDefs: [
-                                { orderable: false, targets: [5] }, // Disable sorting on View column
-                                { visible: false, targets: [6] } // Hide CreatedISO column
+                            order: [
+                                [5, 'desc']
+                            ], // Sort by Created column descending
+                            columnDefs: [{
+                                    orderable: false,
+                                    targets: [6]
+                                }, // Disable sorting on View column
+                                {
+                                    visible: false,
+                                    targets: [7]
+                                } // Hide CreatedISO column
                             ]
                         });
+                    }
+
+                    // Initialize DataTables for HR-approved table when modal is shown
+                    $('#hrApprovedModal').on('shown.bs.modal', function() {
+                        if ($.fn.DataTable && $('#hrApprovedTable').length && !$.fn.DataTable
+                            .isDataTable('#hrApprovedTable')) {
+                            $('#hrApprovedTable').DataTable({
+                                paging: true,
+                                pageLength: 10,
+                                lengthMenu: [
+                                    [10, 25, 50, 100, -1],
+                                    [10, 25, 50, 100, "All"]
+                                ],
+                                searching: true,
+                                ordering: true,
+                                info: true,
+                                autoWidth: false,
+                                responsive: true,
+                                pagingType: 'simple_numbers',
+                                language: {
+                                    paginate: {
+                                        previous: 'Previous',
+                                        next: 'Next'
+                                    }
+                                },
+                                order: [
+                                    [5, 'desc']
+                                ], // Sort by Created column descending
+                                columnDefs: [{
+                                    orderable: false,
+                                    targets: [6]
+                                }] // Disable sorting on View column
+                            });
+                        }
+                    });
+
+                    // Destroy DataTable when modal is hidden to prevent conflicts
+                    $('#hrApprovedModal').on('hidden.bs.modal', function() {
+                        if ($.fn.DataTable && $.fn.DataTable.isDataTable('#hrApprovedTable')) {
+                            $('#hrApprovedTable').DataTable().destroy();
+                        }
+                    });
+
+                    // Year filter function
+                    function filterByYear(year) {
+                        var url = new URL(window.location.href);
+                        if (year === 'all') {
+                            url.searchParams.delete('hr_year');
+                        } else {
+                            url.searchParams.set('hr_year', year);
+                        }
+                        window.location.href = url.toString();
                     }
 
                     // Filter pills - work with DataTables
@@ -499,8 +776,10 @@
                                     // Filter by specific status
                                     $.fn.dataTable.ext.search.push(
                                         function(settings, data, dataIndex) {
-                                            var row = dataTable.row(dataIndex).node();
-                                            var status = $(row).attr('data-status') || '';
+                                            var row = dataTable.row(dataIndex)
+                                                .node();
+                                            var status = $(row).attr(
+                                                'data-status') || '';
                                             return status === want;
                                         }
                                     );
@@ -509,33 +788,41 @@
                             } else {
                                 // Fallback for non-DataTables
                                 var table = document.getElementById('claimsTable');
-                                var rows = table ? table.querySelectorAll('tbody tr') : [];
+                                var rows = table ? table.querySelectorAll('tbody tr') :
+                                    [];
                                 Array.prototype.forEach.call(rows, function(tr) {
                                     if (want === 'all') {
                                         tr.style.display = '';
                                         return;
                                     }
-                                    var s = tr.getAttribute('data-status') || '';
-                                    tr.style.display = (s === want) ? '' : 'none';
+                                    var s = tr.getAttribute('data-status') ||
+                                        '';
+                                    tr.style.display = (s === want) ? '' :
+                                        'none';
                                 });
                             }
                         });
                     });
 
-                // View (open modal + load both workflow & worked-days) - using event delegation for DataTables
-                $(document).on('click', '.view-details', function() {
+                    // View (open modal + load both workflow & worked-days) - using event delegation for DataTables
+                    $(document).on('click', '.view-details', function() {
                         var id = $(this).attr('data-id');
-                        var tpl = $(this).attr('data-url-template'); // /locum-requests/__ID__/status
+                        var tpl = $(this).attr(
+                            'data-url-template'); // /locum-requests/__ID__/status
                         var url = (tpl || '').replace('__ID__', id);
                         var requestId = id; // Store for edit button
 
-                        document.getElementById('detailsMonth').textContent = $(this).attr('data-monthlabel') || '—';
+                        document.getElementById('detailsMonth').textContent = $(this).attr(
+                            'data-monthlabel') || '—';
 
                         // Set edit button URL and hide it initially
-                        var editUrl = '{{ route("locum-requests.edit", ":id") }}'.replace(':id', requestId);
+                        var editUrl = '{{ route('locum-requests.edit', ':id') }}'.replace(
+                            ':id', requestId);
                         $('#edit-resubmit-btn').attr('href', editUrl).hide();
 
                         // reset UI
+                        $('#details-submitted-at').text('—');
+                        $('#details-approved-at').text('—');
                         var $badge = $('#wf-badge');
                         $badge.removeClass('bg-success bg-warning bg-danger bg-secondary')
                             .addClass('bg-secondary').text('Loading…');
@@ -564,6 +851,11 @@
                             url: url,
                             method: 'GET',
                             success: function(data) {
+                                $('#details-submitted-at').text((data && data
+                                    .created_at) ? data.created_at : '—');
+                                $('#details-approved-at').text((data && data
+                                        .hr_approved_at) ? data.hr_approved_at :
+                                    '—');
                                 var wf = (data && data.workflow) ? data.workflow :
                                     {};
                                 var kind = (wf.current_class ? wf.current_class :
@@ -589,17 +881,21 @@
                                         'Pending'));
 
                                 // Show/hide Edit & Resubmit button based on rejection status and time limit
-                                var isRejected = (wf.current_class === 'bg-danger' || wf.current_label === 'Rejected');
+                                var isRejected = (wf.current_class ===
+                                    'bg-danger' || wf.current_label ===
+                                    'Rejected');
                                 if (isRejected) {
                                     // Check if 2 months have passed
-                                    var row = $('.view-details[data-id="' + requestId + '"]').closest('tr');
+                                    var row = $('.view-details[data-id="' +
+                                        requestId + '"]').closest('tr');
                                     var rejectedAt = row.attr('data-rejected-at');
                                     var canEdit = false;
 
                                     if (rejectedAt) {
                                         var rejectedDate = new Date(rejectedAt);
                                         var twoMonthsAgo = new Date();
-                                        twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+                                        twoMonthsAgo.setMonth(twoMonthsAgo
+                                            .getMonth() - 2);
                                         canEdit = rejectedDate >= twoMonthsAgo;
                                     } else {
                                         // If no rejected_at, allow edit (fallback)

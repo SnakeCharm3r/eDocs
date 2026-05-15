@@ -12,6 +12,7 @@ class LocumRequest extends Model
     protected $fillable = [
         'user_id',
         'locum_agreement_id',
+        'rate_used',               // NEW: Preserves the rate used when request was created (for rejected claims)
         'locum_month',
         'locum_year',
         'hours_per_locum',
@@ -37,6 +38,7 @@ class LocumRequest extends Model
         'total_amount'          => 'decimal:2',
         'total_amount_payable'  => 'decimal:2',
         'total_hours'           => 'decimal:2',
+        'rate_used'             => 'decimal:2',
         'per_shift_breakdown'   => 'array',
         'unit_ids' => 'array',
         'platform_ids' => 'array',

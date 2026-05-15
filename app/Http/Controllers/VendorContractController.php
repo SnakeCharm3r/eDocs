@@ -9,26 +9,23 @@ use App\Models\Departments;
 use App\Models\Workflow;
 use App\Models\WorkFlowHistory;
 use App\Models\ContractRenewal;
-use App\Models\Hec;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Cache;
 use App\Mail\ApprovalRequestNotification;
 use App\Mail\ContractAddedMail;
 use App\Mail\ContractRenewalCreated;
 use App\Mail\ReportMail;
-use Illuminate\Support\Facades\Storage;
 
 class VendorContractController extends Controller
 {
 
     public function index()
 {
-    $contracts = CcbrtContract::with(['division', 'department', 'vendor', 'creator'])->get(); 
+    $contracts = ccbrtContract::with(['division', 'department', 'vendor', 'creator'])->get(); 
 
     // Set default values for all stats
     $totalContracts = $contracts->count();
@@ -70,17 +67,10 @@ class VendorContractController extends Controller
     ]);
 }
 
-    public function create($id = null)
-    {
-        $contract = null;
-        if ($id) {
-            $contract = CcbrtContract::with(['division', 'department', 'vendor'])->find($id);
-            if (! $contract) {
-                return redirect()->route('vendorContract.index')->with('error', 'Contract not found.');
-            }
-        }
-
-        return view('vendorcontracts.create', compact('contract'));
+    public function create(){
+        
+        // return the create contract view
+        return view('vendorcontracts.create');
     }
 
     public function addNewContract(){
@@ -275,49 +265,26 @@ class VendorContractController extends Controller
     
 public function upload(Request $request)
 {
+    // Validate request inputs
+    $request->validate([
+        'title' => 'required|string|max:255',
+        'contract_type' => 'required|string|max:255',
+        'vendor_id' => 'required|exists:ccbrt_vendors,id', 
+        'division_id' => 'required|exists:divisions,id',
+        'currency' => 'required|string|max:255',
+        'department_id' => 'required|exists:departments,id',
+        'status' => 'required|string|in:draft,active,expired,terminated',
+        'cost' => 'required|numeric|min:0',
+        'duration_months' => 'required|integer|min:1',
+        'notice_period_months' => 'nullable|integer',
+        'creation_date' => 'required|date',
+        'end_date' => 'required|date|after_or_equal:creation_date',
+        'impact_if_not_requested' => 'required|string|in:Low,Medium,High',
+        'likelihood_rating' => 'required|string|in:Low,Medium,High',
+        'renewal_status' => 'required|string|in:renewed,not_renewed,pending',
+        'file_path' => 'required|file|max:10240',
+    ]);
     try {
-        // Validate request inputs with custom messages
-        $validated = $request->validate([
-            'title' => 'required|string|max:255',
-            'contract_type' => 'required|string|max:255',
-            'vendor_id' => 'required|exists:ccbrt_vendors,id', 
-            'division_id' => 'required|exists:divisions,id',
-            'currency' => 'required|string|max:255',
-            'department_id' => 'required|exists:departments,id',
-            'status' => 'required|string|in:draft,active,expired,terminated,soon_to_expire',
-            'cost' => 'required|numeric|min:0',
-            'duration_months' => 'required|integer|min:1',
-            'notice_period_months' => 'nullable|integer',
-            'creation_date' => 'required|date',
-            'end_date' => 'required|date|after_or_equal:creation_date',
-            'impact_if_not_requested' => 'required|string|in:Low,Medium,High',
-            'likelihood_rating' => 'required|string|in:Low,Medium,High',
-            'renewal_status' => 'required|string|in:renewed,not_renewed,pending',
-            'file_path' => 'required|file|max:51200', // 50MB
-        ], [
-            // Custom error messages
-            'title.required' => 'The contract document name is required.',
-            'title.max' => 'The contract name may not be greater than 255 characters.',
-            'vendor_id.required' => 'Please select a vendor.',
-            'vendor_id.exists' => 'The selected vendor is invalid.',
-            'file_path.required' => 'Please upload a contract file.',
-            'file_path.max' => 'The contract file must not exceed 50MB.',
-            'end_date.after_or_equal' => 'The end date must be after or equal to the start date.',
-        ]);
-
-        // Additional custom validation
-        if ($request->hasFile('file_path')) {
-            $file = $request->file('file_path');
-            $allowedMimes = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'jpg', 'jpeg', 'png', 'gif'];
-            $fileExtension = $file->getClientOriginalExtension();
-            
-            if (!in_array(strtolower($fileExtension), $allowedMimes)) {
-                return redirect()->back()
-                    ->withInput()
-                    ->withErrors(['file_path' => 'Invalid file type. Allowed types: PDF, Word, Excel, Images.']);
-            }
-        }
-
         // Handle file upload
         $filePath = null;
         if ($request->hasFile('file_path')) {
@@ -328,26 +295,26 @@ public function upload(Request $request)
 
         // Create contract
         $contract = CcbrtContract::create([
-            'title' => $validated['title'],
-            'contract_type' => $validated['contract_type'],
-            'vendor_id' => $validated['vendor_id'],
-            'division_id' => $validated['division_id'],
-            'currency' => $validated['currency'],
-            'department_id' => $validated['department_id'],
-            'status' => $validated['status'],
-            'cost' => $validated['cost'],
-            'duration_months' => $validated['duration_months'],
-            'notice_period_months' => $validated['notice_period_months'],
-            'creation_date' => $validated['creation_date'],
-            'end_date' => $validated['end_date'],
-            'impact_if_not_requested' => $validated['impact_if_not_requested'],
-            'likelihood_rating' => $validated['likelihood_rating'],
-            'renewal_status' => $validated['renewal_status'],
+            'title' => $request->title,
+            'contract_type' => $request->contract_type,
+            'vendor_id' => $request->vendor_id,
+            'division_id' => $request->division_id,
+            'currency' => $request->currency,
+            'department_id' => $request->department_id,
+            'status' => $request->status,
+            'cost' => $request->cost,
+            'duration_months' => $request->duration_months,
+            'notice_period_months' => $request->notice_period_months,
+            'creation_date' => $request->creation_date,
+            'end_date' => $request->end_date,
+            'impact_if_not_requested' => $request->impact_if_not_requested,
+            'likelihood_rating' => $request->likelihood_rating,
+            'renewal_status' => $request->renewal_status,
             'file_path' => $filePath,
             'created_by' => auth()->id(),
         ]);
 
-        // Eager load relationships
+        // Eager load relationships: vendor, department, creator
         $contract->load(['vendor', 'department', 'creator']);
 
         // Get recipients based on department
@@ -355,7 +322,7 @@ public function upload(Request $request)
         $procurementOfficers = User::role('procurement officer')->get();
         $recipients = $lineManagers->merge($procurementOfficers)->pluck('email')->unique();
 
-        // Send emails
+        // Send emails individually and log success/failure
         foreach ($recipients as $email) {
             try {
                 Mail::to($email)->send(new ContractAddedMail($contract));
@@ -367,21 +334,14 @@ public function upload(Request $request)
                 ]);
             }
         }
-
         return redirect()->route('vendorContract.index')
                          ->with('success', 'Contract uploaded successfully. Check logs for email delivery status.');
 
-    } catch (\Illuminate\Validation\ValidationException $e) {
-        // This will automatically redirect back with errors and input
-        throw $e;
     } catch (\Exception $e) {
         \Log::error('Contract upload failed: ' . $e->getMessage());
-        return redirect()->back()
-                         ->withInput()
-                         ->with('error', 'Failed to upload contract. Please try again.');
+        return redirect()->back()->with('error', 'Failed to upload contract. Check logs for details.');
     }
 }
-
 //----------------------------------------------------------------------------------------------------------------------------------//
 
 
@@ -397,7 +357,7 @@ public function makeContract()
         return view('vendorcontracts.makeContract', compact('vendors','departments','divisions','contracts'));
     }
 
- // This part uploads a new contract renewal process
+// This part uploads a new contract renewal process
 public function InitiateContractRenewal(Request $request)
 {
     try {
@@ -423,7 +383,6 @@ public function InitiateContractRenewal(Request $request)
 
         \Log::info('Validation passed for Contract Renewal', $validated);
 
-        // 2. Handle service requirements text
         $serviceRequirements = $request->input('service_requirements_text', null);
 
         $filePath = null;
@@ -455,233 +414,24 @@ public function InitiateContractRenewal(Request $request)
 
         \Log::info('Contract Renewal created with ID: ' . $contractRenewal->id);
 
-         $workflow = Workflow::create([
+        Workflow::create([
             'user_id' => Auth::id(),
             'work_flow_status' => 'sent to approval',
             'work_flow_completed' => 0,
             'contract_renewal_id' => $contractRenewal->id,
         ]);
 
-        $workflowHistory = WorkFlowHistory::create([
-            'work_flow_id' => $workflow->id,
-            'remark' => 'Contract Renewal forwarded for approval',
-            'forwarded_by' => Auth::user()->id,
-            'attended_by' => Auth::user()->id,
-            'status' => 1, // pending
-            'created_at' => Carbon::now(),
-        ]);
-
-        //Find next approvers (HEC)
-       $nextApprovers = $this->findNextApprover($workflow, 'line-manager');
-
-       if ($nextApprovers) {
-             foreach ($nextApprovers as $approver) {
-                WorkFlowHistory::create([
-                'work_flow_id' => $workflow->id,
-                'forwarded_by' => Auth::id(), // Line Manager who submitted
-                'attended_by' => $approver->id,
-                'status' => 1, // pending
-                'remark' => "Request forwarded to HEC for approval",
-        ]);
-    }
-
-         // Update workflow status to reflect next approver
-        $workflow->update([
-        'work_flow_status' => 'sent to HEC',
-    ]);
         \Log::info('Workflow created for Contract Renewal ID: ' . $contractRenewal->id);
 
-        return redirect()->route('request.index')->with('success', 'Contract Renewal Request submitted successfully.');
-    }
+        return redirect()->back()->with('success', 'Contract Renewal Request submitted successfully.');
+
     } catch (\Exception $e) {
         \Log::error('Error creating Contract Renewal: ' . $e->getMessage());
         \Log::error('Stack trace: ' . $e->getTraceAsString());
+
         return redirect()->back()->with('error', 'Error submitting request: ' . $e->getMessage());
     }
 }
-    
-    //Map Hec level name to the approvers role and department
-    private function findNextApprover(Workflow $workflow, $currentRole)
-{
-    // Define the approval flow
-    $approvalFlow = [
-        'line-manager' => 'hec',
-        'hec' => 'procurement-officer',
-    ];
-
-    // Find the next role
-    $nextRoleKey = $approvalFlow[$currentRole] ?? null;
-
-    if (!$nextRoleKey) {
-        return null; // No next approver — workflow complete
-    }
-
-    // Get next approvers
-    if ($nextRoleKey === 'hec') {
-        $hecLevel = Departments::where('id', $workflow->contractRenewal->department_id)
-            ->value('hec_id');
-
-        return User::whereHas('roles', function ($q) {
-            $q->whereIn('name', ['coo', 'cms', 'cfo', 'chrdo','ceo']);
-        })->get();
-    }
-
-    return User::role($nextRoleKey)->get();
 }
 
-    //Contract renewal index method
-    public function ContractRenewalIndex($id)
-{
-    $user = auth()->user();
- 
-    $contractRenewal = ContractRenewal::with(['contract', 'vendor', 'division', 'department', 'user'])
-        ->findOrFail($id);
 
-    return view('vendorcontracts.approveMakeContract', compact('contractRenewal', 'user'));
-}
-
-//approve contract renewal
-public function ApproveRenewal(Request $request, $id){
-    
-    $contractRenewal = ContractRenewal::with(['histories','contract','division','department'])
-    ->findOrFail($id);
-    $workflow = $contractRenewal->workflow;
-
-    // Find the current approver’s active step
-    $currentStep = $workflow->histories()
-        ->where('attended_by', Auth::id())
-        ->where('status', 1) // pending
-        ->latest()
-        ->first();
-
-    if (!$currentStep) {
-        return back()->withErrors('No pending approval found for you.');
-    }
-
-    $currentStep->status = 2; // approved
-    $currentStep->who_approve = Auth::id();
-    $currentStep->attend_date = now();
-    $currentStep->remark = 'Approved by ' . Auth::user()->name;
-    $currentStep->save();
-
-    $nextStep = $workflow->histories()
-        ->where('id', '>', $currentStep->id)
-        ->where('status', 0) // unsubmitted
-        ->orderBy('id', 'asc')
-        ->first();
-
-    if ($nextStep) {
-        $nextStep->status = 1; // now pending
-        $nextStep->forwarded_by = Auth::id();
-        $nextStep->save();
-
-        $workflow->work_flow_status = 'pending';
-    } else {
-        // Final approver: mark workflow complete
-        $workflow->work_flow_status = 'approved';
-        $workflow->work_flow_completed = 1;
-    }
-
-    $workflow->save();
-
-    return redirect()->route('vendorContract.index')->with('success', 'Approval submitted successfully.');
-}
-
-//reject contract renewal
-public function rejectRenewal(Request $request, $id)
-{
-    $request->validate([
-        'rejection_reason' => 'required|string|max:1000',
-    ]); 
-    $contractRenewal = ContractRenewal::findOrFail($id);
-    $workflow = $contractRenewal->workflow;
-
-    $currentStep = $workflow->histories()
-        ->where('attended_by', Auth::id())
-        ->where('status', 1) // pending
-        ->latest()
-        ->first();
-
-    if (!$currentStep) {
-        return back()->withErrors('No pending approval found for you.');
-    }
-    $currentStep->status = 3; // rejected   
-    $currentStep->who_approve = Auth::id();
-    $currentStep->attend_date = now();
-    $currentStep->remark = $request->input('rejection_reason');
-    $currentStep->save();
-
-    $workflow->work_flow_status = 'rejected';
-    $workflow->work_flow_completed = 3;
-    $workflow->save();
-    return redirect()->route('contractRenewal.index')->with('success', 'Contract Renewal rejected successfully.');
-}
-
-//view to document download
-public function downloadPDF($id)
-{
-    $contractRenewal = ContractRenewal::with(['vendor', 'division', 'user'])->findOrFail($id);
-
-    $pdf = Pdf::loadView('pdf.contractRenewal', compact('contractRenewal'))
-              ->setPaper('a4', 'portrait');
-
-    $fileName = 'Contract_Renewal_' . $contractRenewal->id . '.pdf';
-
-    return $pdf->download($fileName);
-}
-
-    public function update(Request $request, $id)
-    {
-        $contract = CcbrtContract::findOrFail($id);
-
-        $validated = $request->validate([
-            'title'         => 'required|string|max:255',
-            'vendor_id'     => 'nullable|exists:ccbrt_vendors,id',
-            'cost'          => 'nullable|numeric',
-            'creation_date' => 'nullable|date',
-            'end_date'      => 'nullable|date',
-            'duration_months'=> 'nullable|integer',
-            'currency'      => 'nullable|string|max:10',
-            'status'        => 'nullable|string|max:50',
-            'file_path'     => 'nullable|file|mimes:pdf,jpg,jpeg,png,gif,doc,docx|max:5120', // allow images/docs, 5MB
-            'remove_file'   => 'nullable|in:0,1',
-        ]);
-
-        // assign simple fields
-        $contract->title = $validated['title'];
-        $contract->vendor_id = $validated['vendor_id'] ?? $contract->vendor_id;
-        $contract->cost = $validated['cost'] ?? $contract->cost;
-        $contract->creation_date = $validated['creation_date'] ?? $contract->creation_date;
-        $contract->end_date = $validated['end_date'] ?? $contract->end_date;
-        $contract->duration_months = $validated['duration_months'] ?? $contract->duration_months;
-        $contract->currency = $validated['currency'] ?? $contract->currency;
-        $contract->status = $validated['status'] ?? $contract->status;
-
-        // If client requested to remove existing file, delete it and clear path
-        if ($request->input('remove_file') == '1') {
-            if ($contract->file_path && Storage::disk('public')->exists($contract->file_path)) {
-                Storage::disk('public')->delete($contract->file_path);
-            }
-            $contract->file_path = null;
-        }
-
-        // handle file upload if provided (replace existing file)
-        if ($request->hasFile('file_path')) {
-            // delete previous stored file to avoid orphaned files
-            if ($contract->file_path && Storage::disk('public')->exists($contract->file_path)) {
-                Storage::disk('public')->delete($contract->file_path);
-            }
-            $file = $request->file('file_path');
-            $path = $file->store('contracts', 'public');
-            $contract->file_path = $path;
-        }
-
-        // who updated
-        $contract->updated_by = Auth::id() ?? $contract->updated_by;
-
-        $contract->save();
-
-        return redirect()->route('vendorContract.index')->with('success', 'Contract updated successfully.');
-    }
-
-}

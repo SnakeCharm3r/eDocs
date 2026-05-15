@@ -7,17 +7,19 @@ use App\Models\WorkFlowHistory;
 use App\Models\Clearance_work_flow;
 use App\Models\Clearance_work_flow_history;
 use App\Models\User;
+use App\Models\OnCallRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Spatie\Permission\Models\Role;
 
 class WorkflowManagementController extends Controller
 {
     public function __construct()
     {
         $this->middleware('auth');
-        $this->middleware('permission:manage workflows');
+        $this->middleware('role_or_permission:coo|super-admin|manage workflows');
     }
 
     /**
@@ -65,6 +67,17 @@ class WorkflowManagementController extends Controller
                         });
                 });
             }
+        }
+        
+        // Filter by approver role - show pending workflows assigned to users with this role
+        if ($request->has('approver_role') && $request->approver_role != '') {
+            $roleName = $request->approver_role;
+            $workflowQuery->whereHas('workflowHistory', function ($q) use ($roleName) {
+                $q->where('status', 0) // Pending
+                    ->whereHas('attendedBy.roles', function ($roleQuery) use ($roleName) {
+                        $roleQuery->where('name', $roleName);
+                    });
+            })->where('work_flow_completed', 0);
         }
 
         // Filter regular workflows by form type
@@ -134,6 +147,17 @@ class WorkflowManagementController extends Controller
                 });
             }
         }
+        
+        // Filter clearance workflows by approver role
+        if ($request->has('approver_role') && $request->approver_role != '') {
+            $roleName = $request->approver_role;
+            $clearanceQuery->whereHas('histories', function ($q) use ($roleName) {
+                $q->where('status', 0) // Pending
+                    ->whereHas('attendedBy.roles', function ($roleQuery) use ($roleName) {
+                        $roleQuery->where('name', $roleName);
+                    });
+            })->where('work_flow_completed', 0);
+        }
 
         // Filter clearance workflows by form type
         if ($request->has('form_type') && $request->form_type != '') {
@@ -158,12 +182,15 @@ class WorkflowManagementController extends Controller
         // Merge both collections
         $allWorkflows = $regularWorkflows->concat($clearanceWorkflows);
 
+        // Get all roles for the filter dropdown
+        $roles = Role::orderBy('name')->pluck('name');
+
         // Sort by created_at descending
         $allWorkflows = $allWorkflows->sortByDesc(function ($workflow) {
             return $workflow->created_at;
         })->values();
 
-        return view('workflow-management.index', compact('allWorkflows'));
+        return view('workflow-management.index', compact('allWorkflows', 'roles'));
     }
 
     /**
@@ -219,6 +246,94 @@ class WorkflowManagementController extends Controller
         $histories = $workflow->workflowHistory()->orderBy('created_at', 'asc')->get();
 
         return view('workflow-management.show', compact('workflow', 'histories'));
+    }
+
+    /**
+     * Update workflow status
+     */
+    public function updateStatus(Request $request, $id)
+    {
+        $request->validate([
+            'work_flow_status' => 'required|integer|in:0,1,2',
+            'work_flow_completed' => 'required|integer|in:0,1',
+        ]);
+
+        $workflow = Workflow::findOrFail($id);
+
+        DB::beginTransaction();
+        try {
+            $workflow->work_flow_status = $request->work_flow_status;
+            $workflow->work_flow_completed = $request->work_flow_completed;
+            $workflow->save();
+
+            DB::commit();
+            return redirect()->route('workflow-management.show', $id)
+                ->with('success', 'Workflow status updated successfully.');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return redirect()->back()->withErrors(['error' => 'Failed to update workflow status: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Update form-specific status
+     */
+    public function updateFormStatus(Request $request, $id)
+    {
+        $workflow = Workflow::findOrFail($id);
+
+        DB::beginTransaction();
+        try {
+            if ($workflow->locum_request_id && $request->has('locum_request_status')) {
+                $request->validate([
+                    'history_id' => 'required|exists:work_flow_histories,id',
+                    'locum_request_status' => 'required|integer|in:0,1,2,3,4,5,6',
+                ]);
+
+                $history = WorkFlowHistory::findOrFail($request->history_id);
+                if ($history->work_flow_id != $workflow->id) {
+                    throw new \Exception('History does not belong to this workflow.');
+                }
+
+                $history->locum_request_status = $request->locum_request_status;
+                $history->save();
+
+            } elseif ($workflow->on_call_request_id) {
+                if ($request->has('on_call_request_status')) {
+                    $request->validate([
+                        'history_id' => 'required|exists:work_flow_histories,id',
+                        'on_call_request_status' => 'required|integer|in:0,1,2,3,4,5,6',
+                    ]);
+
+                    $history = WorkFlowHistory::findOrFail($request->history_id);
+                    if ($history->work_flow_id != $workflow->id) {
+                        throw new \Exception('History does not belong to this workflow.');
+                    }
+
+                    $history->on_call_request_status = $request->on_call_request_status;
+                    $history->save();
+                }
+
+                // Update direct status on on_call_requests table if provided
+                if ($request->has('on_call_status') && $workflow->onCallRequest) {
+                    $request->validate([
+                        'on_call_status' => 'required|string|in:pending,approved,rejected',
+                    ]);
+
+                    $workflow->onCallRequest->status = $request->on_call_status;
+                    $workflow->onCallRequest->save();
+                }
+            } else {
+                throw new \Exception('This workflow does not have a form-specific status field.');
+            }
+
+            DB::commit();
+            return redirect()->route('workflow-management.show', $id)
+                ->with('success', 'Form status updated successfully.');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return redirect()->back()->withErrors(['error' => 'Failed to update form status: ' . $e->getMessage()]);
+        }
     }
 
     /**
@@ -469,6 +584,116 @@ class WorkflowManagementController extends Controller
             DB::rollBack();
             return redirect()->back()
                 ->withErrors(['error' => 'Failed to delete workflow: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Delete a clearance workflow and its history
+     */
+    public function destroyClearance($id)
+    {
+        try {
+            $workflow = Clearance_work_flow::findOrFail($id);
+
+            DB::beginTransaction();
+
+            // Delete all workflow history first (due to foreign key constraints)
+            Clearance_work_flow_history::where('work_flow_id', $workflow->id)->delete();
+
+            // Delete the workflow
+            $workflow->delete();
+
+            // Clear error count cache
+            Cache::forget('workflow_errors_count');
+
+            DB::commit();
+
+            return redirect()->route('workflow-management.index')
+                ->with('success', 'Clearance workflow and all associated history have been deleted successfully.');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return redirect()->back()
+                ->withErrors(['error' => 'Failed to delete clearance workflow: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Update history status for regular workflows
+     */
+    public function updateHistoryStatus(Request $request, $id)
+    {
+        $request->validate([
+            'status' => 'required|integer|in:0,1,2',
+            'remark' => 'nullable|string|max:1000',
+        ]);
+
+        $history = WorkFlowHistory::findOrFail($id);
+
+        DB::beginTransaction();
+        try {
+            $oldStatus = $history->status;
+            $history->status = $request->status;
+            
+            if ($request->remark) {
+                $history->remark = ($history->remark ? $history->remark . "\n\n" : '') .
+                    'Status changed from ' . ($oldStatus == 0 ? 'Pending' : ($oldStatus == 1 ? 'Approved' : 'Rejected')) .
+                    ' to ' . ($request->status == 0 ? 'Pending' : ($request->status == 1 ? 'Approved' : 'Rejected')) .
+                    ' by ' . Auth::user()->username . ' on ' . now()->format('Y-m-d H:i:s') .
+                    ($request->remark ? '. Note: ' . $request->remark : '');
+            }
+            
+            if ($request->status == 1 || $request->status == 2) {
+                $history->attend_date = now();
+            }
+            
+            $history->save();
+
+            DB::commit();
+            return redirect()->route('workflow-management.show', $history->work_flow_id)
+                ->with('success', 'History status updated successfully.');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return redirect()->back()->withErrors(['error' => 'Failed to update history status: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Update history status for clearance workflows
+     */
+    public function updateClearanceHistoryStatus(Request $request, $id)
+    {
+        $request->validate([
+            'status' => 'required|integer|in:0,1,2',
+            'remark' => 'nullable|string|max:1000',
+        ]);
+
+        $history = Clearance_work_flow_history::findOrFail($id);
+
+        DB::beginTransaction();
+        try {
+            $oldStatus = $history->status;
+            $history->status = $request->status;
+            
+            if ($request->remark) {
+                $history->remark = ($history->remark ? $history->remark . "\n\n" : '') .
+                    'Status changed from ' . ($oldStatus == 0 ? 'Pending' : ($oldStatus == 1 ? 'Approved' : 'Rejected')) .
+                    ' to ' . ($request->status == 0 ? 'Pending' : ($request->status == 1 ? 'Approved' : 'Rejected')) .
+                    ' by ' . Auth::user()->username . ' on ' . now()->format('Y-m-d H:i:s') .
+                    ($request->remark ? '. Note: ' . $request->remark : '');
+            }
+            
+            if ($request->status == 1 || $request->status == 2) {
+                $history->attend_date = now();
+            }
+            
+            $history->save();
+
+            DB::commit();
+            return redirect()->route('workflow-management.show-clearance', $history->work_flow_id)
+                ->with('success', 'History status updated successfully.');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return redirect()->back()->withErrors(['error' => 'Failed to update history status: ' . $e->getMessage()]);
         }
     }
 

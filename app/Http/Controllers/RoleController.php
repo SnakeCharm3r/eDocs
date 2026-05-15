@@ -23,6 +23,7 @@ class RoleController extends Controller
     {
         $roles = Role::with('permissions')
             ->where('name', '!=', 'acting-line-manager')
+            ->where('name', 'not like', 'finance-officer-%')
             ->get();
         $permissions = \Spatie\Permission\Models\Permission::all();
         return view('role-permission.index', compact('roles', 'permissions'));

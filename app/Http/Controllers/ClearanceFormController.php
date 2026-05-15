@@ -2,6 +2,8 @@
 namespace App\Http\Controllers;
 
 use App\Mail\ApprovalRequestNotification;
+use App\Mail\ClearanceCompletedCosRequest;
+use App\Models\CertificateOfService;
 use App\Models\Clearance_work_flow;
 use App\Models\Clearance_work_flow_history;
 use App\Models\ClearanceForm;
@@ -21,10 +23,13 @@ class ClearanceFormController extends Controller
     {
         $user = Auth::user();
         $userRoles = $user->getRoleNames();
+        $canIctAccessReport = $user->can('ict_acces_report');
         $isLineManager = $userRoles->contains('line-manager');
-        $isHR = $userRoles->contains('hr');
-        $isFinanceOfficer = $userRoles->contains('finance officer');
+        $isHR = $userRoles->contains('hr') || $canIctAccessReport;
+        $isCOO = $userRoles->contains('coo') || $userRoles->contains('super-admin');
+        $isFinanceOfficer = $user->hasFinanceOfficerRole();
         $isITOfficer = $userRoles->contains('it');
+        $canManageAllClearances = $isHR || $isCOO;
         
         // Get clearance forms - either own forms, forms created by line manager for staff, or forms for HR/Finance Officer/IT Officer to approve
         $clearance = null;
@@ -85,7 +90,7 @@ class ClearanceFormController extends Controller
                 })
                 ->where('userId', '!=', $user->id) // Exclude own forms
                 ->where('status', '!=', 'rejected') // Exclude rejected forms
-                ->with(['user', 'workflow'])
+                ->with(['user.department', 'workflow'])
                 ->orderBy('created_at', 'desc')
                 ->get();
             } else {
@@ -93,80 +98,63 @@ class ClearanceFormController extends Controller
             }
         }
         
-        // If HR, get all clearance forms assigned to them (pending and approved)
+        $allClearancesForManagement = collect([]);
+
+        // If HR or ICT access report user: (a) forms pending HR approval, (b) ALL forms for monitoring dashboard
         if ($isHR) {
-            $hrClearances = ClearanceForm::whereHas('workflow.histories', function($query) use ($user) {
-                $query->where('attended_by', $user->id);
+            $hrClearances = ClearanceForm::whereHas('workflow', function($query) {
+                $query->where('work_flow_status', 'Pending Approval - HR Officer')
+                      ->where(function($q) {
+                          $q->where('work_flow_completed', '!=', 1)
+                            ->orWhereNull('work_flow_completed');
+                      });
             })
-            ->where('status', '!=', 'rejected') // Exclude rejected forms
-            ->with(['user', 'workflow'])
+            ->where('status', '!=', 'rejected')
+            ->with(['user.department', 'workflow'])
             ->orderBy('created_at', 'desc')
-            ->distinct()
             ->get();
+
+            // All active clearance forms for monitoring (excluding own form)
+        }
+
+        if ($canManageAllClearances) {
+            $allClearancesForManagement = ClearanceForm::with(['user.department', 'workflow', 'workflow.histories'])
+                ->where('userId', '!=', $user->id)
+                ->orderBy('created_at', 'desc')
+                ->get();
         }
         
-        // If Finance Officer, get clearance forms currently pending at Finance Officer step
+        // If Finance Officer, get all clearance forms they are involved with (pending OR already approved)
         if ($isFinanceOfficer) {
-            // Get workflow IDs that have pending Finance Officer step assigned to this user
-            $pendingWorkflowIds = Clearance_work_flow_history::where('attended_by', $user->id)
+            $financeWorkflowIds = Clearance_work_flow_history::where('attended_by', $user->id)
                 ->where('step_name', 'Finance Officer')
-                ->where('status', 0)
-                ->whereIn('id', function($subquery) use ($user) {
-                    // Get only the latest pending record for each workflow
-                    $subquery->selectRaw('MAX(id)')
-                        ->from('clearance_work_flow_histories')
-                        ->where('status', 0)
-                        ->where('attended_by', $user->id)
-                        ->where('step_name', 'Finance Officer')
-                        ->groupBy('work_flow_id');
-                })
+                ->whereIn('status', [0, 1]) // pending and approved
                 ->pluck('work_flow_id');
-            
-            // Get clearance forms for those workflows
-            $financeClearances = ClearanceForm::whereHas('workflow', function($query) use ($pendingWorkflowIds) {
-                $query->whereIn('id', $pendingWorkflowIds)
-                      ->where(function($q) {
-                          $q->where('work_flow_completed', '!=', 1)
-                            ->orWhereNull('work_flow_completed');
-                      });
+
+            $financeClearances = ClearanceForm::whereHas('workflow', function($query) use ($financeWorkflowIds) {
+                $query->whereIn('id', $financeWorkflowIds);
             })
-            ->where('status', '!=', 'rejected') // Exclude rejected forms
-            ->with(['user', 'workflow'])
+            ->where('status', '!=', 'rejected')
+            ->with(['user.department', 'workflow'])
             ->orderBy('created_at', 'desc')
             ->get();
         }
+
         
-        // If IT Officer, get clearance forms currently pending at IT Officer step
+        // If IT Officer: pending at IT step OR previously approved by any IT user
         if ($isITOfficer) {
-            // Get workflow IDs that have pending IT Officer step assigned to this user
-            $pendingWorkflowIds = Clearance_work_flow_history::where('attended_by', $user->id)
-                ->where('step_name', 'IT Officer')
-                ->where('status', 0)
-                ->whereIn('id', function($subquery) use ($user) {
-                    // Get only the latest pending record for each workflow
-                    $subquery->selectRaw('MAX(id)')
-                        ->from('clearance_work_flow_histories')
-                        ->where('status', 0)
-                        ->where('attended_by', $user->id)
-                        ->where('step_name', 'IT Officer')
-                        ->groupBy('work_flow_id');
+            $itClearances = ClearanceForm::where('status', '!=', 'rejected')
+                ->with(['user.department', 'workflow'])
+                ->whereHas('workflow', function($query) {
+                    $query->whereHas('histories', function($q) {
+                        $q->where('step_name', 'IT Officer')
+                          ->whereIn('status', [0, 1]); // pending or approved
+                    });
                 })
-                ->pluck('work_flow_id');
-            
-            // Get clearance forms for those workflows
-            $itClearances = ClearanceForm::whereHas('workflow', function($query) use ($pendingWorkflowIds) {
-                $query->whereIn('id', $pendingWorkflowIds)
-                      ->where(function($q) {
-                          $q->where('work_flow_completed', '!=', 1)
-                            ->orWhereNull('work_flow_completed');
-                      });
-            })
-            ->where('status', '!=', 'rejected') // Exclude rejected forms
-            ->with(['user', 'workflow'])
-            ->orderBy('created_at', 'desc')
-            ->get();
+                ->orderBy('created_at', 'desc')
+                ->get();
         }
-        
+
         // Set primary clearance (own form if exists, otherwise null)
         $clearance = $ownClearance;
         
@@ -192,7 +180,12 @@ class ClearanceFormController extends Controller
             }
         }
         
-        return view('clearance.index', compact('user', 'clearance', 'workflow', 'currentApprover', 'currentStep', 'staffClearances', 'hrClearances', 'financeClearances', 'itClearances', 'isLineManager', 'isHR', 'isFinanceOfficer', 'isITOfficer'));
+        $departments = DB::table('departments')->orderBy('dept_name')->get();
+
+        // Staff IDs that already have a Certificate of Service (don't need COS button)
+        $cosExistsUserIds = \App\Models\CertificateOfService::pluck('user_id')->flip()->all();
+
+        return view('clearance.index', compact('user', 'clearance', 'workflow', 'currentApprover', 'currentStep', 'staffClearances', 'hrClearances', 'financeClearances', 'itClearances', 'isLineManager', 'isHR', 'isCOO', 'isFinanceOfficer', 'isITOfficer', 'canManageAllClearances', 'allClearancesForManagement', 'departments', 'cosExistsUserIds'));
     }
 
     public function create()
@@ -464,8 +457,8 @@ class ClearanceFormController extends Controller
                 $targetUserRoles = $targetUser->getRoleNames();
                 
                 // Role restrictions: These roles cannot request exit forms for themselves
-                $restrictedRoles = ['hec member', 'hr', 'finance officer', 'it'];
-                $hasRestrictedRole = $targetUserRoles->intersect($restrictedRoles)->isNotEmpty();
+                $restrictedRoles = ['hec member', 'hr', 'it'];
+                $hasRestrictedRole = $targetUserRoles->intersect($restrictedRoles)->isNotEmpty() || $targetUser->hasFinanceOfficerRole();
                 
                 if ($hasRestrictedRole) {
                     Alert::error('Access Denied', 'You cannot request an exit form for yourself. HEC Members, HR, Finance Officers, and IT Officers are not allowed to request exit forms for themselves.');
@@ -730,7 +723,7 @@ class ClearanceFormController extends Controller
                   // dd($lineManagerDepartment);
                    $hec_id = $lineManagerDepartment->hec_id;
                     // dd($hec_id);
-                   // tafuta hec level name sahihi (COO, CFO, CMS, CRHDO)
+                   // tafuta hec level name sahihi (COO, CFO, CMS, CCDRO)
                    $hec = $lineManagerDepartment->hec;
                       //dd($hec);
                    if ($hec) {
@@ -748,8 +741,8 @@ class ClearanceFormController extends Controller
                            case 'CMS':
                                $approverRoleName = 'cms';
                                break;
-                           case 'CRHDO':
-                               $approverRoleName = 'crhdo';
+                           case 'CCDRO':
+                               $approverRoleName = 'ccdro';
                                break;
                            default:
                                throw new \Exception('No valid hec_level_name found for this department.');
@@ -995,4 +988,176 @@ public function forwardClearanceWorkflowHistory ($input){
 
 
 
+
+
+    public function exportExcel(\Illuminate\Http\Request $request)
+    {
+        $dateFrom = $request->input('date_from');
+        $dateTo   = $request->input('date_to');
+        $deptId   = $request->input('department_id', 'all');
+        $statusF  = $request->input('status', 'all');
+
+        $query = ClearanceForm::with(['user.department', 'user.jobTitle', 'workflow'])
+            ->when($dateFrom, fn($q) => $q->whereDate('created_at', '>=', $dateFrom))
+            ->when($dateTo,   fn($q) => $q->whereDate('created_at', '<=', $dateTo));
+
+        if ($deptId !== 'all') {
+            $query->whereHas('user', fn($q) => $q->where('deptId', $deptId));
+        }
+
+        // workflow() relation uses requested_resource_id FK
+        $getStatus = function ($form) {
+            if ($form->status === 'rejected') return 'Rejected';
+            $wf = $form->workflow;
+            if ($wf && $wf->work_flow_completed) return 'Completed';
+            if ($wf) return 'In Progress';
+            return 'Pending';
+        };
+
+        $records = $query->orderBy('created_at', 'desc')->get();
+        if ($statusF !== 'all') {
+            $statusMap = [
+                'pending' => ['In Progress', 'Pending'],
+                'completed' => ['Completed'],
+                'rejected' => ['Rejected'],
+            ];
+            $allowedStatuses = $statusMap[$statusF] ?? [];
+            if (!empty($allowedStatuses)) {
+                $records = $records->filter(fn ($form) => in_array($getStatus($form), $allowedStatuses, true))->values();
+            }
+        }
+
+        // Check if a workflow step was approved (Finance / IT / HR)
+        $stepCleared = function ($form, $stepName) {
+            $wf = $form->workflow;
+            if (!$wf) return 'No';
+            $done = DB::table('clearance_work_flow_histories')
+                ->where('work_flow_id', $wf->id)
+                ->where('step_name', $stepName)
+                ->where('status', 1)
+                ->exists();
+            return $done ? 'Yes' : 'No';
+        };
+
+        // ── PhpSpreadsheet ───────────────────────────────────────────────
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+
+        // ── Summary sheet ────────────────────────────────────────────────
+        $sum = $spreadsheet->getActiveSheet()->setTitle('Summary');
+        $sum->setCellValue('A1', 'CLEARANCE FORMS EXPORT REPORT');
+        $sum->setCellValue('A2', 'Generated: ' . now()->format('d M Y, H:i'));
+        if ($dateFrom || $dateTo)
+            $sum->setCellValue('A3', 'Period: ' . ($dateFrom ?? 'start') . ' to ' . ($dateTo ?? 'end'));
+
+        $sum->setCellValue('A5', 'STATUS')->setCellValue('B5', 'COUNT')->setCellValue('C5', '%');
+        $sum->getStyle('A5:C5')->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+            'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '007A33']],
+        ]);
+
+        $statusGroups = ['Completed' => 0, 'In Progress' => 0, 'Pending' => 0, 'Rejected' => 0];
+        foreach ($records as $rec) {
+            $st = $getStatus($rec);
+            if (isset($statusGroups[$st])) $statusGroups[$st]++;
+        }
+        $total = $records->count();
+        $row = 6;
+        foreach ($statusGroups as $status => $count) {
+            $sum->setCellValue('A'.$row, $status)
+                ->setCellValue('B'.$row, $count)
+                ->setCellValue('C'.$row, $total ? round($count / $total * 100, 1).'%' : '0%');
+            $row++;
+        }
+        $sum->setCellValue('A'.$row, 'TOTAL')->setCellValue('B'.$row, $total);
+        $sum->getStyle('A'.$row.':C'.$row)->applyFromArray(['font' => ['bold' => true]]);
+        foreach (['A' => 28, 'B' => 12, 'C' => 10] as $col => $width)
+            $sum->getColumnDimension($col)->setWidth($width);
+
+        // ── Detailed Records sheet ───────────────────────────────────────
+        $det = $spreadsheet->createSheet()->setTitle('Detailed Records');
+        $headers = ['#', 'Employee Name', 'Department', 'Job Title', 'Last Working Day', 'Submitted Date', 'Status', 'Reason for Leaving', 'Line Mgr Cleared', 'Finance Cleared', 'IT Cleared', 'HR Cleared'];
+        foreach ($headers as $i => $h)
+            $det->setCellValueByColumnAndRow($i + 1, 1, $h);
+        $det->getStyle('A1:L1')->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+            'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '007A33']],
+        ]);
+
+        $r = 2;
+        foreach ($records as $i => $form) {
+            $user = $form->user;
+            $det->setCellValueByColumnAndRow(1,  $r, $i + 1);
+            $det->setCellValueByColumnAndRow(2,  $r, $user ? trim($user->fname.' '.$user->lname) : 'N/A');
+            $det->setCellValueByColumnAndRow(3,  $r, $user?->department?->dept_name ?? 'N/A');
+            $det->setCellValueByColumnAndRow(4,  $r, $user?->jobTitle?->name ?? ($user?->jobTitle?->job_title ?? 'N/A'));
+            $det->setCellValueByColumnAndRow(5,  $r, $form->last_working_day ?? 'N/A');
+            $det->setCellValueByColumnAndRow(6,  $r, $form->created_at ? \Carbon\Carbon::parse($form->created_at)->format('d M Y') : 'N/A');
+            $det->setCellValueByColumnAndRow(7,  $r, $getStatus($form));
+            $det->setCellValueByColumnAndRow(8,  $r, $form->reason_for_leaving ?? ($form->exit_reason ?? 'N/A'));
+            $det->setCellValueByColumnAndRow(9,  $r, $stepCleared($form, 'Line Manager'));
+            $det->setCellValueByColumnAndRow(10, $r, $stepCleared($form, 'Finance Officer'));
+            $det->setCellValueByColumnAndRow(11, $r, $stepCleared($form, 'IT Officer'));
+            $det->setCellValueByColumnAndRow(12, $r, $stepCleared($form, 'HR Officer'));
+            $r++;
+        }
+        foreach ([1=>5, 2=>26, 3=>20, 4=>22, 5=>16, 6=>16, 7=>14, 8=>26, 9=>16, 10=>16, 11=>14, 12=>14] as $col => $width)
+            $det->getColumnDimensionByColumn($col)->setWidth($width);
+        if ($r > 2)
+            $det->getStyle('A2:L'.($r-1))->applyFromArray([
+                'borders' => ['allBorders' => ['borderStyle' => 'thin', 'color' => ['rgb' => 'DEE2E6']]],
+            ]);
+
+        $spreadsheet->setActiveSheetIndex(0);
+
+        $token = $request->input('download_token', '');
+        if ($token) setcookie('clearance_download_token', $token, time() + 60, '/');
+
+        $filename = 'clearance_report_' . now()->format('Ymd_His') . '.xlsx';
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Cache-Control: max-age=0');
+        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet))->save('php://output');
+        exit;
+    }
+
+    public function notifyCosRequest(Request $request, $id)
+    {
+        $user = auth()->user();
+        if (!$user->hasRole('hr') && !$user->hasRole('coo') && !$user->hasRole('super-admin')) {
+            abort(403);
+        }
+
+        $clearance = ClearanceForm::with(['workflow', 'user'])->findOrFail($id);
+        $workflow  = $clearance->workflow;
+
+        if (!$workflow || !$workflow->work_flow_completed) {
+            return back()->with('error', 'Clearance form is not fully completed yet.');
+        }
+
+        $staff = $clearance->user;
+        if (!$staff) {
+            return back()->with('error', 'Staff member not found.');
+        }
+
+        // Record the notification
+        $clearance->update([
+            'cos_notified_at' => now(),
+            'cos_notified_by' => $user->id,
+        ]);
+
+        $createUrl = route('certificate-of-service.create');
+
+        $cooUsers = User::role('coo')->where('status', 'active')->whereNotNull('email')->get();
+        foreach ($cooUsers as $coo) {
+            try {
+                Mail::to($coo->email)
+                    ->queue(new ClearanceCompletedCosRequest($clearance, $staff, $user, $createUrl));
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
+        $staffName = trim(($staff->fname ?? '') . ' ' . ($staff->lname ?? ''));
+        return back()->with('success', "COO has been notified to create a Certificate of Service for {$staffName}.");
+    }
 }

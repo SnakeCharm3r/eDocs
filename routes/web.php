@@ -11,6 +11,7 @@ use App\Http\Controllers\HslbController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\IDCardController;
 use App\Http\Controllers\PolicyController;
+use App\Http\Controllers\DepartmentPolicyController;
 use App\Http\Controllers\RemarkController;
 use App\Http\Controllers\VendorController;
 use App\Http\Controllers\Procurements\VendorsController;
@@ -34,11 +35,12 @@ use App\Http\Controllers\HrRequestsController;
 use App\Http\Controllers\ItRequestsController;
 use App\Http\Controllers\PermissionController;
 use App\Http\Controllers\BankDetailsController;
-use App\Http\Controllers\RequisitionController;
 use App\Http\Controllers\AnnouncementController;
+use App\Http\Controllers\ContractualHoursController;
 use App\Http\Controllers\DataSecurityController;
 use App\Http\Controllers\DeptPlatformController;
 use App\Http\Controllers\LocumRequestController;
+use App\Http\Controllers\NightShiftController;
 use App\Http\Controllers\PlatformUnitController;
 use App\Http\Controllers\ShiftSettingController;
 use App\Illuminate\Controllers\hrDocumentUpload;
@@ -56,6 +58,8 @@ use App\Http\Controllers\WorkflowManagementController;
 use App\Http\Controllers\EmploymentTypeController;
 use App\Http\Controllers\JobDescriptionController;
 use App\Http\Controllers\LocumAgreementController;
+use App\Http\Controllers\LocumRateController;
+use App\Http\Controllers\OnCallRateController;
 use App\Http\Controllers\PrivilegeLevelController;
 use App\Http\Controllers\RequestApproveController;
 use App\Http\Controllers\VendorContractController;
@@ -73,6 +77,7 @@ use App\Http\Controllers\ArutiLevelController;
 use App\Http\Controllers\EdocsLevelController;
 use App\Http\Controllers\NetworkFolderController;
 use App\Http\Controllers\AccessKeyCardController;
+use App\Http\Controllers\RequisitionController;
 
 
 Route::get('/', function () {
@@ -108,6 +113,9 @@ Route::get('/departments/oncall-settings', [DepartmentController::class, 'oncall
 Route::patch('/departments/oncall-settings', [DepartmentController::class, 'updateOncallSettings'])->name('departments.update-oncall-settings')->middleware('permission:manage oncall settings');
 
 Route::group(['middleware' => 'auth'], function () {
+    Route::post('/switch-role', [AuthController::class, 'switchRole'])->name('switch-role');
+    Route::post('/clear-active-role', [AuthController::class, 'clearActiveRole'])->name('clear-active-role');
+
     Route::middleware(['auth'])->group(function () {
         Route::get('/profile/personal-details', [AuthController::class, 'personalDetails'])->name('profile.personalDetails');
         Route::post('/profile/personal-details', [AuthController::class, 'savePersonalDetails']);
@@ -151,17 +159,17 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/signature/{id}/edit', [SignatureController::class, 'edit'])->name('signature.edit')->middleware('permission:manage signatures');
         Route::delete('/signature/{id}', [SignatureController::class, 'destroy'])->name('signature.destroy')->middleware('permission:manage signatures');
         Route::get('/all-users-signatures', [SignatureController::class, 'showUsersWithSignatures'])->name('users.signatures')->middleware('permission:view signatures');
-        Route::get('/hr_form/{id}', [SignatureController::class, 'showHrForm'])->name('hr_form')->middleware('permission:view signatures');
-        Route::get('/bank_form/{id}', [SignatureController::class, 'showBankForm'])->name('bank_form')->middleware('permission:view signatures');
+        Route::get('/hr_form/{id}', [SignatureController::class, 'showHrForm'])->name('hr_form')->middleware('permission:view signatures|ict_acces_report|view my requests');
+        Route::get('/bank_form/{id}', [SignatureController::class, 'showBankForm'])->name('bank_form')->middleware('permission:view signatures|ict_acces_report|view my requests');
         Route::post('/bank_form_confirm', [SignatureController::class, 'approveBankForm'])->name('bank_form_confirm')->middleware('permission:approve signatures');
         Route::post('/bank_form_reject', [SignatureController::class, 'rejectBankForm'])->name('bank_form_reject')->middleware('permission:reject signatures');
-        Route::get('/heslb_form/{id}', [SignatureController::class, 'showHeslbkForm'])->name('heslb_form')->middleware('permission:view signatures');
+        Route::get('/heslb_form/{id}', [SignatureController::class, 'showHeslbkForm'])->name('heslb_form')->middleware('permission:view signatures|ict_acces_report|view my requests');
         Route::post('/heslb_form_confirm', [SignatureController::class, 'approveHeslbForm'])->name('heslb_form_confirm')->middleware('permission:approve signatures');
         Route::post('/heslb_form_reject', [SignatureController::class, 'rejectHeslbForm'])->name('heslb_form_reject')->middleware('permission:reject signatures');
-        Route::get('/nhif_form/{id}', [SignatureController::class, 'showNhifForm'])->name('nhif_form')->middleware('permission:view signatures');
+        Route::get('/nhif_form/{id}', [SignatureController::class, 'showNhifForm'])->name('nhif_form')->middleware('permission:view signatures|ict_acces_report|view my requests');
         Route::post('/nhif_form_confirm', [SignatureController::class, 'approveNhifForm'])->name('nhif_form_confirm')->middleware('permission:approve signatures');
         Route::post('/nhif_form_reject', [SignatureController::class, 'rejectNhifForm'])->name('nhif_form_reject')->middleware('permission:reject signatures');
-        Route::get('/id_form/{id}', [SignatureController::class, 'showIdForm'])->name('id_form')->middleware('permission:view signatures');
+        Route::get('/id_form/{id}', [SignatureController::class, 'showIdForm'])->name('id_form')->middleware('permission:view signatures|ict_acces_report|view my requests');
         Route::post('/id_form_confirm', [SignatureController::class, 'approveIdForm'])->name('id_form_confirm')->middleware('permission:approve signatures');
         Route::post('/id_form_reject', [SignatureController::class, 'rejectIdForm'])->name('id_form_reject')->middleware('permission:reject signatures');
         Route::post('/hr_form_approve/{id}', [SignatureController::class, 'approveHrForm'])->name('hr_form_approve')->middleware('permission:approve signatures');
@@ -178,13 +186,19 @@ Route::group(['middleware' => 'auth'], function () {
         Route::post('/change-request/{id}/approve', [ChangeRequestController::class, 'approve'])->name('change_request.approve')->middleware('auth');
         Route::post('/change-reject/{id}', [ChangeRequestController::class, 'rejectChangeRequest'])->name('change_request.reject')->middleware('auth');
         Route::get('/change-request/{id}', [SignatureController::class, 'show'])->name('change_request.show')->middleware('auth');
+        Route::get('/change-request/{id}/pdf', [ChangeRequestController::class, 'showPdf'])->name('change_request.pdf')->middleware('auth');
         // Legacy routes - kept for backward compatibility (using different names to avoid conflicts)
         Route::post('/change-request/{id}/approve-legacy', [SignatureController::class, 'approveAndForwardToPriceCommittee'])
             ->name('change_request.approve.legacy')->middleware('permission:approve forms');
         Route::post('/send_to_hec', [SignatureController::class, 'sendToHec'])
             ->name('change_request.send_to_hec')->middleware('permission:approve forms');
 
-        Route::resource('sops', SopController::class)->middleware('permission:view sops');
+        Route::resource('sops', SopController::class)->middleware('role_or_permission:view sops|view all sops');
+        Route::post('/sops/{id}/archive', [SopController::class, 'archive'])->name('sops.archive')->middleware('role_or_permission:view sops|view all sops');
+        Route::post('/sops/{id}/restore', [SopController::class, 'restore'])->name('sops.restore')->middleware('role_or_permission:view sops|view all sops');
+        Route::get('/sops-expiring', [SopController::class, 'expiring'])->name('sops.expiring')->middleware('role_or_permission:view sops|view all sops');
+        Route::get('/my-sops', [SopController::class, 'mySops'])->name('sops.my-sops')->middleware('role_or_permission:view sops|view all sops');
+        Route::get('/sops/departments-by-division/{divisionId}', [SopController::class, 'getDepartmentsByDivision'])->name('sops.departments-by-division')->middleware('role_or_permission:view sops|view all sops');
         Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
         Route::get('/review-dashboard', [DashboardController::class, 'reviewDashboard'])->name('review-dashboard');
 
@@ -192,25 +206,50 @@ Route::group(['middleware' => 'auth'], function () {
         Route::put('/change-password', [AuthController::class, 'changePassword'])->name('change.password.update');
 
         // Clearance form routes - only for users submitting their own forms
-        Route::get('/clearance', [ClearanceFormController::class, 'index'])->name('clearance.index')->middleware('permission:access clearance form');
+        Route::get('/clearance', [ClearanceFormController::class, 'index'])->name('clearance.index')->middleware('role_or_permission:coo|super-admin|access clearance form|ict_acces_report');
+        Route::get('/clearance/export', [ClearanceFormController::class, 'exportExcel'])->name('clearance.export')->middleware('role_or_permission:coo|super-admin|ict_acces_report');
         Route::get('/clearance/create', [ClearanceFormController::class, 'create'])->name('clearance.create')->middleware('permission:access clearance form');
         Route::match(['get', 'post'], '/clearance/review', [ClearanceFormController::class, 'review'])->name('clearance.review')->middleware('permission:access clearance form');
         Route::post('/clearance', [ClearanceFormController::class, 'store'])->name('clearance.store')->middleware('permission:access clearance form');
-        Route::get('/clearance/{id}', [ClearanceFormController::class, 'show'])->name('clearance.show')->middleware('permission:access clearance form');
+        Route::get('/clearance/{id}', [ClearanceFormController::class, 'show'])->name('clearance.show')->middleware('role_or_permission:coo|super-admin|access clearance form|view clearance forms|ict_acces_report');
         Route::delete('/clearance/{id}', [ClearanceFormController::class, 'destroy'])->name('clearance.destroy')->middleware('permission:access clearance form');
 
-        Route::resource('policies', PolicyController::class)->middleware('permission:view policies');
+        // Staff signed policies: all authenticated users can view (no permission required)
+        Route::get('/staff-signed-policies', [PolicyController::class, 'staffSignedIndex'])->name('policies.staff-signed')->middleware('auth');
+
+        // Override resource routes to use {id} instead of {policy} for edit, update, show, destroy
+        Route::get('/policies', [PolicyController::class, 'index'])->name('policies.index')->middleware('permission:view policies');
+        Route::get('/policies/create', [PolicyController::class, 'create'])->name('policies.create')->middleware('permission:view policies');
+        Route::post('/policies', [PolicyController::class, 'store'])->name('policies.store')->middleware('permission:view policies');
+        Route::post('/policies/other-organization-email-notifications', [PolicyController::class, 'updateOtherOrgEmailNotifications'])->name('policies.other-org-email-notifications.update')->middleware('permission:view policies');
+        Route::get('/policies/{id}', [PolicyController::class, 'show'])->name('policies.show')->middleware('permission:view policies');
+        Route::post('/policies/{id}/record-view', [PolicyController::class, 'recordView'])->name('policies.record-view')->middleware('permission:view policies');
+        Route::get('/policies/{id}/edit', [PolicyController::class, 'edit'])->name('policies.edit')->middleware('permission:view policies');
+        Route::put('/policies/{id}', [PolicyController::class, 'update'])->name('policies.update')->middleware('permission:view policies');
+        Route::delete('/policies/{id}', [PolicyController::class, 'destroy'])->name('policies.destroy')->middleware('permission:view policies');
+        Route::post('/policies/{id}/archive', [PolicyController::class, 'archive'])->name('policies.archive')->middleware('permission:view policies');
+        Route::post('/policies/{id}/restore', [PolicyController::class, 'restore'])->name('policies.restore')->middleware('permission:view policies');
+        Route::get('/policies/departments-by-division/{divisionId}', [PolicyController::class, 'getDepartmentsByDivision'])->name('policies.departments-by-division')->middleware('permission:view policies');
+        Route::get('/policy-categories/next-section', [\App\Http\Controllers\PolicyCategoryController::class, 'nextSectionNumber'])->name('policy-categories.next-section')->middleware('permission:view policies');
+        Route::post('/policy-categories', [\App\Http\Controllers\PolicyCategoryController::class, 'store'])->name('policy-categories.store')->middleware('permission:view policies');
+        Route::put('/policy-categories/{category}', [\App\Http\Controllers\PolicyCategoryController::class, 'update'])->name('policy-categories.update')->middleware('permission:view policies');
+        Route::delete('/policy-categories/{category}', [\App\Http\Controllers\PolicyCategoryController::class, 'destroy'])->name('policy-categories.destroy')->middleware('permission:view policies');
+
+        // Department policies (line manager managed, PDF only, max 5MB) - visible to anyone with view policies (e.g. admin)
+        Route::get('/department-policies', [DepartmentPolicyController::class, 'index'])->name('department-policies.index')->middleware('permission:view policies');
+        Route::get('/department-policies/create', [DepartmentPolicyController::class, 'create'])->name('department-policies.create')->middleware('permission:view policies');
+        Route::post('/department-policies', [DepartmentPolicyController::class, 'store'])->name('department-policies.store')->middleware('permission:view policies');
+        Route::get('/department-policies/{id}', [DepartmentPolicyController::class, 'show'])->name('department-policies.show')->middleware('permission:view policies');
+        Route::get('/department-policies/{id}/edit', [DepartmentPolicyController::class, 'edit'])->name('department-policies.edit')->middleware('permission:view policies');
+        Route::put('/department-policies/{id}', [DepartmentPolicyController::class, 'update'])->name('department-policies.update')->middleware('permission:view policies');
+        Route::delete('/department-policies/{id}', [DepartmentPolicyController::class, 'destroy'])->name('department-policies.destroy')->middleware('permission:view policies');
+
+        // Legacy routes for backward compatibility
         Route::get('/create-department', [PolicyController::class, 'createDepartmentPolicy'])->name('policies.create-department');
         Route::post('/policies/department', [PolicyController::class, 'storeDepartmentPolicy'])->name('policies.store-department');
-        // Edit a department policy
         Route::get('policies/{id}/edit-department', [PolicyController::class, 'editDepartmentPolicy'])->name('policies.edit-department');
-
-        // Update the department policy
         Route::put('policies/{id}/update-department', [PolicyController::class, 'updateDepartmentPolicy'])->name('policies.update-department');
-
-        Route::delete('department-policies/{departmentPolicy}/destroy-department', [PolicyController::class, 'destroydept'])
-            ->name('department-policies.destroy-department');
-        Route::get('/policies/create', [PolicyController::class, 'create'])->name('policies.create');
+        Route::delete('department-policies/{departmentPolicy}/destroy-department', [PolicyController::class, 'destroydept'])->name('department-policies.destroy-department');
 
         Route::get('/user-policies', [PolicyController::class, 'user'])->name('policies.user');
         Route::post('/policies/accept', [PolicyController::class, 'accept'])->name('policies.accept');
@@ -321,8 +360,14 @@ Route::group(['middleware' => 'auth'], function () {
         Route::resource('/employment', EmploymentTypeController::class)->middleware('permission:view employment type');
         Route::resource('/role', RoleController::class)->middleware('permission:manage roles');
         Route::resource('/permission', PermissionController::class)->middleware('permission:manage permissions');
+        Route::resource('/external-system-links', \App\Http\Controllers\ExternalSystemLinkController::class)->middleware('permission:manage users');
+        Route::resource('/locum-rates', LocumRateController::class)->middleware('role_or_permission:view departments|Manage Category')->except(['show']);
+        Route::post('/locum-rates/expire-all-agreements', [LocumRateController::class, 'expireAllAgreements'])->name('locum-rates.expire-all')->middleware('role_or_permission:view departments|Manage Category');
+        Route::post('/locum-rates/reactivate-agreements', [LocumRateController::class, 'reactivateAgreements'])->name('locum-rates.reactivate-agreements')->middleware('role_or_permission:view departments|Manage Category');
+        Route::resource('/oncall-rates', OnCallRateController::class)->middleware('role_or_permission:view departments|Manage Category')->except(['show']);
         Route::resource('/request', RequestController::class)->middleware('permission:view my requests');
-        Route::resource('/requestapprove', RequestApproveController::class)->middleware('permission:approve requests');
+        Route::get('/requestapprove/export', [RequestApproveController::class, 'exportExcel'])->name('requestapprove.export')->middleware('permission:approve requests|ict_acces_report');
+        Route::resource('/requestapprove', RequestApproveController::class)->middleware('permission:approve requests|ict_acces_report');
         // Route::resource('/hslb',HslbController::class);
         // Route::post('hslb/hr-confirm/{id}', [HslbController::class, 'hrConfirm'])->name('hslb.hrConfirm');
         Route::resource('ict-access-form', IctAccessController::class)->middleware('role_or_permission:line-manager|view ict access form|view it requests');
@@ -330,22 +375,37 @@ Route::group(['middleware' => 'auth'], function () {
 
         Route::get('/ict-access-form/{id}/edit', [IctAccessController::class, 'edit'])->name('ict-access-form.edit')->middleware('role_or_permission:line-manager|view ict access form|view it requests');
         Route::get('/users', [AuthController::class, 'getAllUser'])->name('users.index')->middleware('permission:manage users');
+        Route::get('/users/export', [AuthController::class, 'exportUsers'])->name('users.export')->middleware('permission:manage users');
         Route::get('/users/{id}/details', [AuthController::class, 'getUserDetails'])->name('users.details')->middleware('permission:manage users');
+        Route::get('/users/{id}/permissions', [AuthController::class, 'getUserPermissions'])->name('users.permissions')->middleware('permission:manage users');
+        Route::post('/users/{id}/permissions', [AuthController::class, 'updateUserPermissions'])->name('users.permissions.update')->middleware('permission:manage users');
         Route::post('/users/bulk-action', [AuthController::class, 'bulkAction'])->name('users.bulk-action')->middleware('permission:manage users');
         Route::delete('/users/{id}', [AuthController::class, 'destroy'])->name('users.destroy')->middleware('permission:delete users');
         Route::post('/users/{id}/unlock', [AuthController::class, 'unlockUser'])->name('users.unlock')->middleware('permission:manage users');
         Route::get('/users/login-logs', [AuthController::class, 'getFailedLoginLogs'])->name('users.login-logs')->middleware('permission:manage users');
         Route::get('/staff-details', [AuthController::class, 'userDetail'])->name('employee.index')->middleware('permission:view staff details');
+
+        // Certificate of Service
+        Route::get('/certificate-of-service', [\App\Http\Controllers\CertificateOfServiceController::class, 'index'])->name('certificate-of-service.index')->middleware('permission:view staff details');
+        Route::get('/certificate-of-service/create', [\App\Http\Controllers\CertificateOfServiceController::class, 'create'])->name('certificate-of-service.create')->middleware('permission:view staff details');
+        Route::post('/certificate-of-service', [\App\Http\Controllers\CertificateOfServiceController::class, 'store'])->name('certificate-of-service.store')->middleware('permission:view staff details');
+        Route::get('/certificate-of-service/template/settings', [\App\Http\Controllers\CertificateOfServiceController::class, 'templateSettings'])->name('certificate-of-service.template')->middleware('permission:view staff details');
+        Route::post('/certificate-of-service/template/settings', [\App\Http\Controllers\CertificateOfServiceController::class, 'updateTemplateSettings'])->name('certificate-of-service.template.update')->middleware('permission:view staff details');
+        Route::get('/certificate-of-service/{certificateOfService}', [\App\Http\Controllers\CertificateOfServiceController::class, 'show'])->name('certificate-of-service.show')->middleware('permission:view staff details');
+        Route::post('/certificate-of-service/logo', [\App\Http\Controllers\CertificateOfServiceController::class, 'updateLogo'])->name('certificate-of-service.logo')->middleware('permission:view staff details');
+        Route::get('/certificate-of-service/{certificateOfService}/download', [\App\Http\Controllers\CertificateOfServiceController::class, 'download'])->name('certificate-of-service.download')->middleware('permission:view staff details');
+        Route::post('/certificate-of-service/{certificateOfService}/initialize', [\App\Http\Controllers\CertificateOfServiceController::class, 'initialize'])->name('certificate-of-service.initialize')->middleware('permission:view staff details');
+        Route::delete('/certificate-of-service/{certificateOfService}', [\App\Http\Controllers\CertificateOfServiceController::class, 'destroy'])->name('certificate-of-service.destroy')->middleware('permission:view staff details');
         Route::get('/staff/add', [AuthController::class, 'showAddStaffForm'])->name('staff.add')->middleware('permission:view staff details');
         Route::post('/staff/add', [AuthController::class, 'handleAddStaff'])->name('staff.add.handle')->middleware('permission:view staff details');
         Route::post('/staff/bulk-action', [AuthController::class, 'staffBulkAction'])->name('staff.bulk-action')->middleware('permission:view staff details');
         Route::post('/staff/manage-license', [AuthController::class, 'manageLicense'])->name('staff.manage-license')->middleware('permission:view staff details');
+        Route::get('/staff/export', [AuthController::class, 'exportStaff'])->name('staff.export')->middleware('permission:view staff details');
         Route::post('/users/{user}/reset-password', [AuthController::class, 'adminResetUserPassword'])->name('users.reset-password')->middleware('permission:reset user password');
         Route::put('/employee/{id}', [AuthController::class, 'update'])->name('employee.update')->middleware('permission:edit employee details');
         Route::delete('/delete/{id}', [AuthController::class, 'deleteUser'])->name('auth.destroy')->middleware('permission:delete users');
 
         Route::get('/get-job-titles/{departmentId}', [AuthController::class, 'getJobTitless']);
-        Route::get('/user/{id}/forms', [AuthController::class, 'viewForms'])->name('employees_details.forms')->middleware('permission:view employee forms');
 
         //deactivate and activate user
         Route::put('/auth/deactivate/{id}', [AuthController::class, 'deactivate'])->name('auth.deactivate')->middleware('permission:deactivate users');
@@ -361,16 +421,21 @@ Route::group(['middleware' => 'auth'], function () {
         // Workflow Management
         Route::prefix('workflow-management')->name('workflow-management.')->group(function () {
             Route::get('/', [WorkflowManagementController::class, 'index'])->name('index')->middleware('permission:manage workflows');
-            Route::get('/clearance', [WorkflowManagementController::class, 'clearanceWorkflows'])->name('clearance')->middleware('permission:manage workflows');
+            Route::get('/clearance', [WorkflowManagementController::class, 'clearanceWorkflows'])->name('clearance')->middleware('role_or_permission:coo|super-admin|manage workflows');
             Route::get('/errors', [WorkflowManagementController::class, 'errors'])->name('errors')->middleware('permission:manage workflows');
             Route::delete('/bulk-delete', [WorkflowManagementController::class, 'bulkDestroy'])->name('bulk-destroy')->middleware('permission:manage workflows');
-            Route::delete('/{id}', [WorkflowManagementController::class, 'destroy'])->name('destroy')->middleware('permission:manage workflows');
-            Route::get('/{id}', [WorkflowManagementController::class, 'show'])->name('show')->middleware('permission:manage workflows');
-            Route::get('/clearance/{id}', [WorkflowManagementController::class, 'showClearance'])->name('show-clearance')->middleware('permission:manage workflows');
+            Route::put('/{id}/update-status', [WorkflowManagementController::class, 'updateStatus'])->name('update-status')->middleware('permission:manage workflows');
+            Route::put('/{id}/update-form-status', [WorkflowManagementController::class, 'updateFormStatus'])->name('update-form-status')->middleware('permission:manage workflows');
+            Route::get('/clearance/{id}', [WorkflowManagementController::class, 'showClearance'])->name('show-clearance')->middleware('role_or_permission:coo|super-admin|manage workflows');
+            Route::delete('/clearance/{id}', [WorkflowManagementController::class, 'destroyClearance'])->name('destroy-clearance')->middleware('role_or_permission:coo|super-admin|manage workflows');
             Route::get('/history/{id}/edit', [WorkflowManagementController::class, 'editHistory'])->name('edit-history')->middleware('permission:manage workflows');
             Route::put('/history/{id}', [WorkflowManagementController::class, 'updateHistory'])->name('update-history')->middleware('permission:manage workflows');
-            Route::get('/clearance-history/{id}/edit', [WorkflowManagementController::class, 'editClearanceHistory'])->name('edit-clearance-history')->middleware('permission:manage workflows');
-            Route::put('/clearance-history/{id}', [WorkflowManagementController::class, 'updateClearanceHistory'])->name('update-clearance-history')->middleware('permission:manage workflows');
+            Route::put('/history/{id}/update-status', [WorkflowManagementController::class, 'updateHistoryStatus'])->name('update-history-status')->middleware('permission:manage workflows');
+            Route::get('/clearance-history/{id}/edit', [WorkflowManagementController::class, 'editClearanceHistory'])->name('edit-clearance-history')->middleware('role_or_permission:coo|super-admin|manage workflows');
+            Route::put('/clearance-history/{id}', [WorkflowManagementController::class, 'updateClearanceHistory'])->name('update-clearance-history')->middleware('role_or_permission:coo|super-admin|manage workflows');
+            Route::put('/clearance-history/{id}/update-status', [WorkflowManagementController::class, 'updateClearanceHistoryStatus'])->name('update-clearance-history-status')->middleware('role_or_permission:coo|super-admin|manage workflows');
+            Route::delete('/{id}', [WorkflowManagementController::class, 'destroy'])->name('destroy')->middleware('permission:manage workflows');
+            Route::get('/{id}', [WorkflowManagementController::class, 'show'])->name('show')->middleware('permission:manage workflows');
         });
 
         Route::resource('platforms', PlatformController::class)->except(['show'])->middleware('permission:manage platforms');
@@ -440,6 +505,7 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/view-nhif-form/{id}', [AuthController::class, 'downloadNhifForm'])->name('download-nhif-form')->middleware('permission:access nhif registration');
         Route::get('/view-hslb-form/{id}', [AuthController::class, 'downloadHslbForm'])->name('download-hslb-form')->middleware('permission:access heslb form');
         Route::get('/view-it-access/{id}', [AuthController::class, 'downloadItForm'])->name('download-it-form')->middleware('role_or_permission:line-manager|view ict access form|view it requests');
+        Route::get('/view-id-form/{id}', [AuthController::class, 'downloadIdForm'])->name('download-id-form')->middleware('permission:view signatures');
         Route::get('/view-exit-form/{id}', [AuthController::class, 'downloadExitForm'])->name('download-exit-form')->middleware('permission:access clearance form');
 
 
@@ -462,9 +528,10 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/employee/{id}/conflict-interest', [AuthController::class, 'hrConflictInterest'])->name('hr.employee.conflict-interest')->middleware('permission:view staff details');
         Route::post('/employee/{id}/conflict-interest', [AuthController::class, 'hrSaveConflictInterest'])->name('hr.employee.save-conflict-interest')->middleware('permission:view staff details');
         Route::post('/employee/{id}/submit-registration', [AuthController::class, 'hrSubmitRegistration'])->name('hr.employee.submit-registration')->middleware('permission:view staff details');
+        Route::put('/employee/{id}/oncall-rates', [AuthController::class, 'updateOnCallRates'])->name('employee.update-oncall-rates')->middleware('permission:view staff details');
         // web.php (or api.php)
-        Route::get('/user/{id}/edit', [AuthController::class, 'editUserDetails'])->name('user.edit')->middleware('permission:edit users');
-        Route::put('/user/{id}', [AuthController::class, 'updateUserDetails'])->name('user.update')->middleware('permission:edit users');
+        Route::get('/user/{id}/edit', [AuthController::class, 'editUserDetails'])->name('user.edit')->middleware('role_or_permission:hr|super-admin|edit users');
+        Route::put('/user/{id}', [AuthController::class, 'updateUserDetails'])->name('user.update')->middleware('role_or_permission:hr|super-admin|edit users');
 
 
         Route::get('/users/{id}/edit', [AuthController::class, 'showEditForm'])->name('users.showEditForm')->middleware('permission:edit users');
@@ -480,7 +547,8 @@ Route::group(['middleware' => 'auth'], function () {
 
         Route::post('/approve_form', [FormController::class, 'approveForm'])->name('approve_form')->middleware('permission:approve forms');
         Route::get('/approver_form', [FormController::class, 'getApprover'])->name('approver_form')->middleware('permission:approve forms');
-        Route::get('/show_form/{id}', [FormController::class, 'getForm'])->name('show_form')->middleware('permission:view form details');
+        Route::get('/show_form/{id}', [FormController::class, 'getForm'])->name('show_form')->middleware('permission:view form details|ict_acces_report|view my requests');
+        Route::get('/show_form/{id}/pdf', [FormController::class, 'getFormPdf'])->name('show_form.pdf')->middleware('permission:view form details|ict_acces_report|view my requests');
         Route::post('/reject_form', [FormController::class, 'rejectForm'])->middleware('permission:reject forms');
         Route::post('/remove_hardware_item', [FormController::class, 'removeHardwareItem'])->name('remove_hardware_item')->middleware('permission:approve forms');
 
@@ -501,23 +569,31 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/announcements/{id}/edit', [AnnouncementController::class, 'edit'])->name('announcements.edit')->middleware('role_or_permission:hr|line-manager|cfo|cms|coo|super-admin|Super-Admin');
         Route::put('/announcements/{id}', [AnnouncementController::class, 'update'])->name('announcements.update')->middleware('role_or_permission:hr|line-manager|cfo|cms|coo|super-admin|Super-Admin');
         Route::delete('/announcements/{id}', [AnnouncementController::class, 'destroy'])->name('announcements.destroy')->middleware('role_or_permission:hr|line-manager|cfo|cms|coo|super-admin|Super-Admin');
+        Route::post('/announcements/{id}/record-view', [AnnouncementController::class, 'recordView'])->name('announcements.record-view');
+
+        // Contractual Hours Management
+        Route::resource('contractual-hours', ContractualHoursController::class)->middleware('permission:Manage Category');
 
         //Hrdocuments route
         Route::get('view', [AnnouncementController::class, 'ViewHRDocuments'])->name('HrDocuments.index')->middleware('permission:view hr documents');
         Route::get('addview', [AnnouncementController::class, 'addview'])->name('HrDocuments.addview')->middleware('permission:upload hr documents');
-        Route::delete('documents/{id}', [AnnouncementController::class, 'destroyhrdoc'])->name('HrDocuments.destroyhrdoc')->middleware('permission:delete hr documents');
         Route::post('add', [AnnouncementController::class, 'add'])->name('HrDocuments.add')->middleware('permission:upload hr documents');
+        Route::get('documents/{id}/edit', [AnnouncementController::class, 'editHrDocument'])->name('HrDocuments.edit')->middleware('permission:upload hr documents');
+        Route::put('documents/{id}', [AnnouncementController::class, 'updateHrDocument'])->name('HrDocuments.update')->middleware('permission:upload hr documents');
+        Route::delete('documents/{id}', [AnnouncementController::class, 'destroyhrdoc'])->name('HrDocuments.destroyhrdoc')->middleware('permission:delete hr documents');
+        Route::get('view/{DocId}', [AnnouncementController::class, 'view'])->name('documents.view')->middleware('permission:view hr documents');
         Route::get('download/{DocId}', [AnnouncementController::class, 'download'])->name('documents.download')->middleware('permission:download hr documents');
         // Route::put('/ict-access-form/update/{id}', [RequestController::class, 'updateIctForm'])->name('form.updateIctForm');
 
         Route::post('/approve_clearform', [FormController::class, 'approveClearanceForm'])->name('approve_clearform')->middleware('permission:approve clearance forms');
         Route::get('/exit_forms/approvers', [ClearanceFormController::class, 'getApprover'])->name('exit_forms.approvers')->middleware('permission:approve clearance forms');
-        Route::get('/exit_forms/{id}', [FormController::class, 'getClearance'])->name('exit_forms.show')->middleware('permission:view clearance forms|access clearance form');
+        Route::get('/exit_forms/{id}', [FormController::class, 'getClearance'])->name('exit_forms.show')->middleware('role_or_permission:coo|super-admin|view clearance forms|access clearance form|ict_acces_report');
         Route::post('/exit_forms/{id}/reject', [ClearanceFormController::class, 'rejectForm'])->name('exit_forms.reject')->middleware('permission:reject clearance forms');
+        Route::post('/clearance/{id}/notify-cos', [ClearanceFormController::class, 'notifyCosRequest'])->name('clearance.notify-cos')->middleware('role_or_permission:coo|super-admin|view clearance forms');
         Route::get('/clearance/{id}/download', [FormController::class, 'downloadClearancePDF'])->name('clearance.download')->middleware('permission:view clearance forms');
 
         // Route for Clearance Forms View
-        Route::get('/clearance_forms/{id}', [FormController::class, 'getClearance'])->middleware('permission:view clearance forms');
+        Route::get('/clearance_forms/{id}', [FormController::class, 'getClearance'])->middleware('permission:view clearance forms|ict_acces_report|view my requests');
 
         //Get Clearance in my request view
         Route::get('/clearance/edit/{id}', [RequestController::class, 'editClearance'])->name('clearance.edit')->middleware('permission:view clearance forms');
@@ -526,48 +602,78 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('role-permission/{roleId}/give-permission', [RoleController::class, 'addPermissionToRole'])->middleware('permission:assign permissions');
         Route::put('role-permission/{roleId}/give-permission', [RoleController::class, 'givePermissionToRole'])->middleware('permission:assign permissions');
 
-        //requisitions
-        Route::get('/requisitions', [RequisitionController::class, 'index'])->name('requisitions.index')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/create', [RequisitionController::class, 'create'])->name('requisitions.create')->middleware('permission:access requisitions form');
-        Route::post('/requisitions', [RequisitionController::class, 'store'])->name('requisitions.store')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/users-by-job-title', [RequisitionController::class, 'getUsersByJobTitle'])->name('requisitions.users-by-job-title')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/all-staff-in-department', [RequisitionController::class, 'getAllStaffInDepartment'])->name('requisitions.all-staff-in-department')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/line-managers-by-department', [RequisitionController::class, 'getLineManagersByDepartment'])->name('requisitions.line-managers-by-department')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/job-titles-by-department', [RequisitionController::class, 'getJobTitlesByDepartment'])->name('requisitions.job-titles-by-department')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/approve', [RequisitionController::class, 'view'])->name('requisitions.view')->middleware('permission:approve requests');
-        Route::get('/requisitions/{id}/download', [RequisitionController::class, 'downloadPDF'])->name('requisitions.download')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/{id}', [RequisitionController::class, 'show'])->name('requisitions.show')->middleware('permission:access requisitions form');
-        Route::get('/requisitions/{requisition}/edit', [RequisitionController::class, 'edit'])->name('requisitions.edit')->middleware('permission:access requisitions form');
-        Route::put('/requisitions/{requisition}', [RequisitionController::class, 'update'])->name('requisitions.update')->middleware('permission:access requisitions form');
-        Route::delete('/requisitions/{requisition}', [RequisitionController::class, 'destroy'])->name('requisitions.destroy')->middleware('permission:access requisitions form');
-        Route::get('requisitions/{id}/edit', [RequisitionController::class, 'edit'])->name('requisitions.edit')->middleware('permission:access requisitions form');
-        Route::put('requisitions/{id}/resubmit', [RequisitionController::class, 'resubmit'])->name('requisitions.resubmit')->middleware('permission:access requisitions form');
-
-        Route::get('/requisitions/staff-by-department', [RequisitionController::class, 'staffByDepartment'])
-            ->name('requisitions.staff-by-department');
-
-        // Requisition flow settings (System Settings → Requisition Flow)
-        Route::get('/settings/requisition-flow', [RequisitionController::class, 'flowSettings'])
-            ->name('settings.requisition-flow')
-            ->middleware('permission:view settings');
-
-        // Recruitment Requisitions (HR.01) Routes
-        Route::prefix('recruitment-requisitions')->name('recruitment-requisitions.')->group(function () {
-            Route::get('/', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'index'])->name('index');
-            Route::get('/create', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'create'])->name('create')->middleware('role:hod');
-            Route::post('/', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'store'])->name('store')->middleware('role:hod');
-            Route::get('/{id}', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'show'])->name('show');
-            Route::get('/{id}/edit', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'edit'])->name('edit')->middleware('role:hod');
-            Route::put('/{id}', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'update'])->name('update')->middleware('role:hod');
-            Route::post('/{id}/submit', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'submit'])->name('submit')->middleware('role:hod');
-            Route::post('/{id}/hec-review', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'hecReview'])->name('hec-review')->middleware('role:hec-cfo,hec-coo,hec-cms,hec-ccd');
-            Route::post('/{id}/cfo-review', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'cfoReview'])->name('cfo-review')->middleware('role:cfo');
-            Route::post('/{id}/ceo-decision', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'ceoDecision'])->name('ceo-decision')->middleware('role:ceo');
-            Route::post('/{id}/hr-process', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'hrProcess'])->name('hr-process')->middleware('role:hr');
-            Route::get('/{id}/export-pdf', [\App\Http\Controllers\RecruitmentRequisitionController::class, 'exportPDF'])->name('export-pdf')->middleware('role:hr');
+        // Recruitment Requisitions Routes
+        Route::prefix('requisitions')->name('requisitions.')->group(function () {
+            Route::get('/', [RequisitionController::class, 'index'])->name('index');
+            Route::get('/pending', [RequisitionController::class, 'pending'])->name('pending');
+            Route::get('/create', [RequisitionController::class, 'create'])->name('create');
+            Route::post('/', [RequisitionController::class, 'store'])->name('store');
+            Route::get('/employees', [RequisitionController::class, 'getEmployeesByDepartment'])->name('employees');
+            Route::get('/line-managers', [RequisitionController::class, 'getLineManagersByDepartment'])->name('line-managers');
+            Route::get('/job-titles', [RequisitionController::class, 'getJobTitlesByDepartment'])->name('job-titles');
+            Route::get('/export', [RequisitionController::class, 'exportExcel'])->name('export');
+            Route::get('/{accessId}', [RequisitionController::class, 'show'])->name('show');
+            Route::get('/{accessId}/download-jd', [RequisitionController::class, 'downloadJobDescription'])->name('download-jd');
+            Route::post('/{accessId}/payroll-review', [RequisitionController::class, 'payrollReview'])->name('payroll-review');
+            Route::post('/{accessId}/hec-review', [RequisitionController::class, 'hecReview'])->name('hec-review');
+            Route::post('/{accessId}/cfo-review', [RequisitionController::class, 'cfoReview'])->name('cfo-review');
+            Route::post('/{accessId}/ceo-review', [RequisitionController::class, 'ceoReview'])->name('ceo-review');
+            Route::post('/{accessId}/hr-review', [RequisitionController::class, 'hrReview'])->name('hr-review');
+            Route::get('/{accessId}/edit', [RequisitionController::class, 'edit'])->name('edit');
+            Route::put('/{accessId}', [RequisitionController::class, 'update'])->name('update');
+            Route::post('/{accessId}/resubmit', [RequisitionController::class, 'resubmit'])->name('resubmit');
         });
 
-        //Contract Description
+        // ========== Performance Management System ==========
+        Route::prefix('pms')->name('pms.')->group(function () {
+            // Dashboard
+            Route::get('/dashboard', [\App\Http\Controllers\Pms\PmsDashboardController::class, 'index'])->name('dashboard');
+
+            // Cycles (HR/Admin/CEO only)
+            Route::resource('cycles', \App\Http\Controllers\Pms\PmsCycleController::class)->except(['show', 'destroy']);
+            Route::post('/cycles/{cycle}/toggle', [\App\Http\Controllers\Pms\PmsCycleController::class, 'toggleActive'])->name('cycles.toggle');
+
+            // Strategic Goals (CEO/HR only)
+            Route::resource('goals', \App\Http\Controllers\Pms\PmsStrategicGoalController::class);
+
+            // KPIs
+            Route::get('/kpis', [\App\Http\Controllers\Pms\PmsKpiController::class, 'index'])->name('kpis.index');
+            Route::get('/kpis/create', [\App\Http\Controllers\Pms\PmsKpiController::class, 'create'])->name('kpis.create');
+            Route::post('/kpis', [\App\Http\Controllers\Pms\PmsKpiController::class, 'store'])->name('kpis.store');
+            Route::get('/kpis/{kpi}', [\App\Http\Controllers\Pms\PmsKpiController::class, 'show'])->name('kpis.show');
+            Route::post('/kpis/{kpi}/accept', [\App\Http\Controllers\Pms\PmsKpiController::class, 'accept'])->name('kpis.accept');
+            Route::post('/kpis/{kpi}/reject', [\App\Http\Controllers\Pms\PmsKpiController::class, 'reject'])->name('kpis.reject');
+            Route::post('/kpis/{kpi}/negotiate', [\App\Http\Controllers\Pms\PmsKpiController::class, 'negotiate'])->name('kpis.negotiate');
+            Route::post('/kpis/{kpi}/revise', [\App\Http\Controllers\Pms\PmsKpiController::class, 'revise'])->name('kpis.revise');
+            Route::post('/kpis/{kpi}/agree', [\App\Http\Controllers\Pms\PmsKpiController::class, 'agree'])->name('kpis.agree');
+            Route::post('/kpis/{kpi}/progress', [\App\Http\Controllers\Pms\PmsKpiController::class, 'updateProgress'])->name('kpis.progress');
+
+            // HR Monitoring
+            Route::get('/hr-monitor', [\App\Http\Controllers\Pms\PmsKpiController::class, 'hrMonitor'])->name('kpis.hr-monitor');
+
+            // KPI Tree Visualization
+            Route::get('/kpi-tree', [\App\Http\Controllers\Pms\PmsKpiController::class, 'tree'])->name('kpis.tree');
+
+            // Performance Reviews
+            Route::get('/reviews', [\App\Http\Controllers\Pms\PmsReviewController::class, 'index'])->name('reviews.index');
+            Route::get('/reviews/create', [\App\Http\Controllers\Pms\PmsReviewController::class, 'create'])->name('reviews.create');
+            Route::post('/reviews', [\App\Http\Controllers\Pms\PmsReviewController::class, 'store'])->name('reviews.store');
+            Route::get('/reviews/{review}', [\App\Http\Controllers\Pms\PmsReviewController::class, 'show'])->name('reviews.show');
+            Route::post('/reviews/{review}/acknowledge', [\App\Http\Controllers\Pms\PmsReviewController::class, 'acknowledge'])->name('reviews.acknowledge');
+
+            // Notifications
+            Route::get('/notifications', [\App\Http\Controllers\Pms\PmsNotificationController::class, 'index'])->name('notifications.index');
+            Route::post('/notifications/{notification}/read', [\App\Http\Controllers\Pms\PmsNotificationController::class, 'markAsRead'])->name('notifications.read');
+            Route::post('/notifications/mark-all-read', [\App\Http\Controllers\Pms\PmsNotificationController::class, 'markAllRead'])->name('notifications.mark-all-read');
+
+            // Settings (HR/Admin only)
+            Route::get('/settings', [\App\Http\Controllers\Pms\PmsSettingsController::class, 'index'])->name('settings.index');
+            Route::put('/settings', [\App\Http\Controllers\Pms\PmsSettingsController::class, 'update'])->name('settings.update');
+            Route::post('/settings/toggle', [\App\Http\Controllers\Pms\PmsSettingsController::class, 'toggle'])->name('settings.toggle');
+
+        });
+
+//Contract Description
         Route::get('/contracts', [ContractController::class, 'index'])->name('contracts.index')->middleware('permission:view contracts');
         Route::get('/contracts/create', [ContractController::class, 'create'])->name('contracts.create')->middleware('permission:view contracts');
         Route::post('/contracts', [ContractController::class, 'store'])->name('contracts.store')->middleware('permission:view contracts');
@@ -643,7 +749,7 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/oncall-requests', [OnCallRequestController::class, 'index'])->name('oncall_requests.index')->middleware('permission:view oncall requests');
         Route::get('/oncall-requests/view', [OnCallRequestController::class, 'view'])->name('oncall_requests.view')->middleware('permission:approve oncall requests');
         Route::get('/oncall-requests/actioned', [OnCallRequestController::class, 'actioned'])->name('oncall_requests.actioned')->middleware('permission:view oncall requests');
-        Route::get('/oncall-requests/report', [OnCallRequestController::class, 'report'])->name('oncall_requests.report')->middleware('permission:view oncall reports');
+        Route::get('/oncall-requests/report', [OnCallRequestController::class, 'report'])->name('oncall_requests.report')->middleware('permission:view oncall reports|view oncall requests');
         Route::get('/oncall-requests/create', [OnCallRequestController::class, 'create'])->name('oncall_requests.create')->middleware('permission:create oncall requests');
         Route::get('/oncall-requests/create-for-staff', [OnCallRequestController::class, 'createForStaff'])->name('oncall_requests.create-for-staff')->middleware('permission:create oncall requests');
         Route::post('/oncall-requests', [OnCallRequestController::class, 'store'])->name('oncall_requests.store')->middleware('permission:create oncall requests');
@@ -668,6 +774,7 @@ Route::group(['middleware' => 'auth'], function () {
         Route::post('oncall_requests_bulk-reject', [OnCallRequestController::class, 'bulkReject'])->name('oncall_requests.bulk-reject')->middleware('permission:reject oncall requests');
 
         Route::get('/oncall_requests/approved', [OnCallRequestController::class, 'approvedRequests'])->name('oncall_requests.approved')->middleware('permission:view oncall reports');
+        Route::get('/done-requests', [OnCallRequestController::class, 'approvedRequests'])->name('done_requests.index')->middleware('permission:view oncall reports');
         Route::get('/oncall_requests/consumption_report', [OnCallRequestController::class, 'consumptionReport'])->name('oncall_requests.consumption_report')->middleware('permission:view oncall reports');
 
         Route::get('/oncall-requests/reports', [OnCallRequestController::class, 'reports'])
@@ -733,11 +840,6 @@ Route::group(['middleware' => 'auth'], function () {
         Route::put('loan-declarations/{loanDeclaration}', [LoanDeclarationController::class, 'update'])->name('loan-declarations.update')->middleware('permission:view forms');
         Route::delete('loan-declarations/{loanDeclaration}', [LoanDeclarationController::class, 'destroy'])->name('loan-declarations.destroy')->middleware('permission:view forms');
 
-        //locum agreements
-        Route::get('/locum-agreements', [LocumAgreementController::class, 'index'])->name('locum-agreements.index')->middleware('permission:view locum requests');
-        // Route::post('/locum-agreements', [LocumAgreementController::class, 'store'])->name('locum-agreements.store');
-
-
         // Locum Agreements
         Route::get('/locum-agreements', [LocumAgreementController::class, 'index'])->name('locum-agreements.index')->middleware('permission:view locum requests');
         Route::get('/locum-agreements/create', [LocumAgreementController::class, 'create'])->name('locum-agreements.create')->middleware('permission:view locum requests');
@@ -746,6 +848,7 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/locum-agreements/{id}', [LocumAgreementController::class, 'show'])->name('locum-agreements.show')->middleware('permission:view locum requests');
         Route::get('/locum-agreements/{id}/edit', [LocumAgreementController::class, 'edit'])->name('locum-agreements.edit')->middleware('permission:view locum requests');
         Route::put('/locum-agreements/{id}', [LocumAgreementController::class, 'update'])->name('locum-agreements.update')->middleware('permission:view locum requests');
+        Route::post('/locum-agreements/{id}/update-rate', [LocumAgreementController::class, 'updateRate'])->name('locum-agreements.update-rate')->middleware('permission:view locum requests');
         Route::get('/locum-agreements-approve/{id}', [LocumAgreementController::class, 'approve'])->name('locum-agreements.approve')->middleware('permission:approve locum requests');
         Route::get('/locum-agreements-reject/{id}', [LocumAgreementController::class, 'reject'])->name('locum-agreements.reject')->middleware('permission:reject locum requests');
 
@@ -761,72 +864,59 @@ Route::group(['middleware' => 'auth'], function () {
         Route::put('/locum-requests/{id}', [LocumRequestController::class, 'update'])->name('locum-requests.update')->middleware('permission:edit locum requests');
         Route::get('/locum-requests-export', [LocumRequestController::class, 'export'])->name('locum-requests.export')->middleware('permission:view locum reports');
         Route::get('/locum-requests-actioned-export', [LocumRequestController::class, 'exportActioned'])
-            ->name('locum-requests.actioned.export')->middleware('permission:view locum reports');
+            ->name('locum-requests.actioned.export')->middleware('permission:view locum reports|ict_acces_report');
 
 
         // Procurements Module - Contracts
         Route::prefix('procurements/contracts')->name('procurements.contracts.')->group(function () {
-            Route::get('/', [ContractsController::class, 'index'])->name('index')->middleware('permission:view contracts');
-            Route::get('/create', [ContractsController::class, 'create'])->name('create')->middleware('permission:view contracts');
-            Route::post('/', [ContractsController::class, 'store'])->name('store')->middleware('permission:view contracts');
+            Route::get('/', [ContractsController::class, 'index'])->name('index')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/create', [ContractsController::class, 'create'])->name('create')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/', [ContractsController::class, 'store'])->name('store')->middleware('role_or_permission:manage_contracts|view contracts');
             Route::get('/departments/{divisionId}', [ContractsController::class, 'getDepartmentsByEntity'])->name('departments.by-entity');
             Route::get('/departments/{departmentId}/line-manager', [ContractsController::class, 'getLineManager'])->name('departments.line-manager');
-            Route::get('/export', [ContractsController::class, 'export'])->name('export')->middleware('permission:view contracts');
-            Route::get('/notifications/manage', [ContractsController::class, 'notificationManagement'])->name('notification-management')->middleware('permission:view contracts');
-            Route::get('/upload/create', [ContractsController::class, 'uploadContract'])->name('upload.create')->middleware('permission:view contracts');
-            Route::get('/add-new/create', [ContractsController::class, 'addNewContract'])->name('add-new.create')->middleware('permission:view contracts');
-            Route::get('/renewal/create', [ContractsController::class, 'makeContract'])->name('renewal.create')->middleware('permission:view contracts');
-            Route::get('/approvals', [ContractsController::class, 'contractApprovalIndex'])->name('approvals.index')->middleware('permission:view contracts');
-            Route::get('/{id}/details', [ContractsController::class, 'getDetails'])->name('details')->middleware('permission:view contracts');
-            Route::get('/{id}/document', [ContractsController::class, 'document'])->name('document')->middleware('permission:view contracts');
-            Route::get('/{id}/edit', [ContractsController::class, 'edit'])->name('edit')->middleware('permission:view contracts');
-            Route::get('/{id}', [ContractsController::class, 'show'])->name('show')->middleware('permission:view contracts');
-            Route::post('/{id}/approve', [ContractsController::class, 'approveContract'])->name('approve')->middleware('permission:view contracts');
-            Route::post('/{id}/reject', [ContractsController::class, 'rejectContract'])->name('reject')->middleware('permission:view contracts');
-            Route::post('/{id}/renewal', [ContractsController::class, 'initiateRenewal'])->name('renewal.initiate')->middleware('permission:view contracts');
-            Route::post('/{id}/send-reminder', [ContractsController::class, 'sendReminder'])->name('send-reminder')->middleware('permission:view contracts');
-            Route::post('/{id}/vendor-found', [ContractsController::class, 'markVendorFound'])->name('vendor.found')->middleware('permission:view contracts');
-            Route::put('/{id}', [ContractsController::class, 'update'])->name('update')->middleware('permission:view contracts');
-            Route::put('/{id}/notifications', [ContractsController::class, 'updateNotificationSettings'])->name('update-notification')->middleware('permission:view contracts');
-            Route::delete('/{id}', [ContractsController::class, 'destroy'])->name('destroy')->middleware('permission:view contracts');
-            Route::post('/send-bulk-reminders', [ContractsController::class, 'sendBulkReminders'])->name('send-bulk-reminders')->middleware('permission:view contracts');
-            Route::post('/test-reminder-email', [ContractsController::class, 'testReminderEmail'])->name('test-reminder-email')->middleware('permission:view contracts');
-            Route::post('/upload', [ContractsController::class, 'upload'])->name('upload')->middleware('permission:view contracts');
-            Route::post('/renewal', [ContractsController::class, 'initiateContractRenewal'])->name('renewal.store')->middleware('permission:view contracts');
+            Route::get('/export', [ContractsController::class, 'export'])->name('export')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/notifications/manage', [ContractsController::class, 'notificationManagement'])->name('notification-management')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/upload/create', [ContractsController::class, 'uploadContract'])->name('upload.create')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/add-new/create', [ContractsController::class, 'addNewContract'])->name('add-new.create')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/renewal/create', [ContractsController::class, 'makeContract'])->name('renewal.create')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/approvals', [ContractsController::class, 'contractApprovalIndex'])->name('approvals.index')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/{id}/details', [ContractsController::class, 'getDetails'])->name('details')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/{id}/document', [ContractsController::class, 'document'])->name('document')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/{id}/edit', [ContractsController::class, 'edit'])->name('edit')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/{id}', [ContractsController::class, 'show'])->name('show')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/{id}/approve', [ContractsController::class, 'approveContract'])->name('approve')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/{id}/reject', [ContractsController::class, 'rejectContract'])->name('reject')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/{id}/renewal', [ContractsController::class, 'initiateRenewal'])->name('renewal.initiate')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/{id}/file', [ContractsController::class, 'fileContract'])->name('file')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/{id}/send-reminder', [ContractsController::class, 'sendReminder'])->name('send-reminder')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/{id}/vendor-found', [ContractsController::class, 'markVendorFound'])->name('vendor.found')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::put('/{id}', [ContractsController::class, 'update'])->name('update')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::put('/{id}/notifications', [ContractsController::class, 'updateNotificationSettings'])->name('update-notification')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::delete('/{id}', [ContractsController::class, 'destroy'])->name('destroy')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/send-bulk-reminders', [ContractsController::class, 'sendBulkReminders'])->name('send-bulk-reminders')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/test-reminder-email', [ContractsController::class, 'testReminderEmail'])->name('test-reminder-email')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/test-near-expiry-notification', [ContractsController::class, 'testNearExpiryNotification'])->name('test-near-expiry-notification')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::get('/get-contract-recipients', [ContractsController::class, 'getContractRecipients'])->name('get-contract-recipients')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/test-initiate-renewal', [ContractsController::class, 'testInitiateRenewal'])->name('test-initiate-renewal')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/run-near-expiry-command', [ContractsController::class, 'runNearExpiryCommand'])->name('run-near-expiry-command')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/run-expired-command', [ContractsController::class, 'runExpiredCommand'])->name('run-expired-command')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/run-hec-contracts-command', [ContractsController::class, 'runHecContractsCommand'])->name('run-hec-contracts-command')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/upload', [ContractsController::class, 'upload'])->name('upload')->middleware('role_or_permission:manage_contracts|view contracts');
+            Route::post('/renewal', [ContractsController::class, 'initiateContractRenewal'])->name('renewal.store')->middleware('role_or_permission:manage_contracts|view contracts');
         });
 
-        // HEC Contracts Module
+        // HEC Contracts Module — authorization handled inside controller
         Route::prefix('hec-contracts')->name('hec-contracts.')->group(function () {
-            // View-only access for HEC members and Admin-Secretary
-            Route::get('/', [HecContractsController::class, 'index'])
-                ->name('index')
-                ->middleware('role:Admin-Secretary|coo|cfo|cms|crhdo|super-admin');
-
-            // Create / Edit / Delete restricted to Admin-Secretary (and super-admin)
-            Route::get('/create', [HecContractsController::class, 'create'])
-                ->name('create')
-                ->middleware('role:Admin-Secretary|super-admin');
-
-            Route::post('/', [HecContractsController::class, 'store'])
-                ->name('store')
-                ->middleware('role:Admin-Secretary|super-admin');
-
-            Route::get('/{id}/edit', [HecContractsController::class, 'edit'])
-                ->name('edit')
-                ->middleware('role:Admin-Secretary|super-admin');
-
-            Route::put('/{id}', [HecContractsController::class, 'update'])
-                ->name('update')
-                ->middleware('role:Admin-Secretary|super-admin');
-
-            Route::delete('/{id}', [HecContractsController::class, 'destroy'])
-                ->name('destroy')
-                ->middleware('role:Admin-Secretary|super-admin');
-
-            // Show single contract (must be last so it doesn't catch /create or /{id}/edit)
-            Route::get('/{id}', [HecContractsController::class, 'show'])
-                ->name('show')
-                ->middleware('role:Admin-Secretary|coo|cfo|cms|crhdo|super-admin');
+            Route::get('/',          [HecContractsController::class, 'index'])->name('index');
+            Route::get('/export',    [HecContractsController::class, 'export'])->name('export');
+            Route::get('/create',    [HecContractsController::class, 'create'])->name('create');
+            Route::post('/',         [HecContractsController::class, 'store'])->name('store');
+            Route::get('/{id}/edit', [HecContractsController::class, 'edit'])->name('edit');
+            Route::put('/{id}',      [HecContractsController::class, 'update'])->name('update');
+            Route::delete('/{id}',   [HecContractsController::class, 'destroy'])->name('destroy');
+            Route::post('/{id}/renew',[HecContractsController::class, 'renew'])->name('renew');
+            Route::post('/{id}/archive',[HecContractsController::class, 'archive'])->name('archive');
+            Route::get('/{id}',      [HecContractsController::class, 'show'])->name('show');
         });
 
         // Legacy routes for backward compatibility (deprecated)
@@ -848,17 +938,17 @@ Route::group(['middleware' => 'auth'], function () {
 
         // Procurements Module - Vendors
         Route::prefix('procurements/vendors')->name('procurements.vendors.')->group(function () {
-            Route::get('/', [VendorsController::class, 'index'])->name('index')->middleware('permission:view vendors');
-            Route::get('/department-vendors', [VendorsController::class, 'departmentVendors'])->name('department-vendors')->middleware('permission:view vendors');
-            Route::get('/hec-department-vendors', [VendorsController::class, 'hecDepartmentVendors'])->name('hec-department-vendors')->middleware('permission:view vendors');
-            Route::get('/create', [VendorsController::class, 'create'])->name('create')->middleware('permission:create vendor');
-            Route::post('/', [VendorsController::class, 'store'])->name('store')->middleware('permission:create vendor');
-            Route::get('/{id}', [VendorsController::class, 'show'])->name('show')->middleware('permission:view vendors');
-            Route::get('/{id}/edit', [VendorsController::class, 'edit'])->name('edit')->middleware('permission:create vendor');
-            Route::put('/{id}', [VendorsController::class, 'update'])->name('update')->middleware('permission:create vendor');
-            Route::delete('/{id}', [VendorsController::class, 'destroy'])->name('destroy')->middleware('permission:create vendor');
+            Route::get('/', [VendorsController::class, 'index'])->name('index')->middleware('role_or_permission:manage_vendor|view vendors');
+            Route::get('/department-vendors', [VendorsController::class, 'departmentVendors'])->name('department-vendors')->middleware('role_or_permission:line-manager|view vendors');
+            Route::get('/hec-department-vendors', [VendorsController::class, 'hecDepartmentVendors'])->name('hec-department-vendors')->middleware('role_or_permission:coo|cfo|cms|ccdro|view vendors');
+            Route::get('/create', [VendorsController::class, 'create'])->name('create')->middleware('role_or_permission:manage_vendor|create vendor');
+            Route::post('/', [VendorsController::class, 'store'])->name('store')->middleware('role_or_permission:manage_vendor|create vendor');
+            Route::get('/{id}', [VendorsController::class, 'show'])->name('show')->middleware('role_or_permission:manage_vendor|line-manager|coo|cfo|cms|ccdro|view vendors');
+            Route::get('/{id}/edit', [VendorsController::class, 'edit'])->name('edit')->middleware('permission:manage_vendor');
+            Route::put('/{id}', [VendorsController::class, 'update'])->name('update')->middleware('permission:manage_vendor');
+            Route::delete('/{id}', [VendorsController::class, 'destroy'])->name('destroy')->middleware('permission:manage_vendor');
             Route::post('/{id}/rate', [VendorsController::class, 'rate'])->name('rate')->middleware('permission:view vendors');
-            Route::get('/{id}/ratings', [VendorsController::class, 'ratings'])->name('ratings')->middleware('permission:view vendors');
+            Route::get('/{id}/ratings', [VendorsController::class, 'ratings'])->name('ratings')->middleware('role_or_permission:line-manager|coo|cfo|cms|ccdro|view vendors');
         });
 
         // Legacy routes for backward compatibility (deprecated)
@@ -882,11 +972,29 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('locum-requests/{locumRequest}/show', [LocumRequestController::class, 'showLocumRequest'])->name('locum-requests.showLocumRequest');
         Route::get('/locum-agreement-show', [LocumAgreementController::class, 'viewAgreementRequest'])->name('locum-requests.viewAgreementRequest');
 
+        // ── Night Shift ──────────────────────────────────────────────────────
+        Route::get('/night-shift',                  [NightShiftController::class, 'index'])->name('night-shift.index');
+        Route::get('/night-shift/create',           [NightShiftController::class, 'create'])->name('night-shift.create');
+        Route::post('/night-shift',                 [NightShiftController::class, 'store'])->name('night-shift.store');
+        Route::get('/night-shift/{nightShift}',           [NightShiftController::class, 'show'])->name('night-shift.show');
+        Route::get('/night-shift/{nightShift}/details',  [NightShiftController::class, 'details'])->name('night-shift.details');
+        Route::get('/night-shift/{nightShift}/edit',     [NightShiftController::class, 'edit'])->name('night-shift.edit');
+        Route::put('/night-shift/{nightShift}/resubmit', [NightShiftController::class, 'resubmit'])->name('night-shift.resubmit');
+        Route::get('/night-shift-approve',                [NightShiftController::class, 'approveIndex'])->name('night-shift.approve.index');
+        Route::post('/night-shift/{nightShift}/approve',  [NightShiftController::class, 'approve'])->name('night-shift.approve');
+        Route::post('/night-shift/{nightShift}/reject',   [NightShiftController::class, 'reject'])->name('night-shift.reject');
+        Route::post('/night-shift/bulk-approve',          [NightShiftController::class, 'bulkApprove'])->name('night-shift.bulk-approve');
+        Route::post('/night-shift/bulk-reject',           [NightShiftController::class, 'bulkReject'])->name('night-shift.bulk-reject');
+        Route::get('/night-shift/{nightShift}/biotime',   [NightShiftController::class, 'biotimeData'])->name('night-shift.biotime');
+        Route::get('/night-shift-report',                [NightShiftController::class, 'report'])->name('night-shift.report');
+        Route::get('/night-shift-report/export',          [NightShiftController::class, 'reportExport'])->name('night-shift.report.export');
+
         //biotime
         Route::post('/fetch-biotime', [LocumRequestController::class, 'fetchBioTimeData'])->name('locum-requests.fetch-biotime')->middleware('permission:create locum requests');
         Route::post('/fetch-biotime-incharge', [LocumRequestController::class, 'inchargeFetchBioTimeData'])->name('locum-requests.fetch-biotime-incharge')->middleware('permission:create locum requests');
 
-        Route::get('done-requests/', [LocumRequestController::class, 'report'])->name('locum-requests.report')->middleware('permission:view locum reports');
+        Route::get('done-requests/', [LocumRequestController::class, 'report'])->name('locum-requests.report');
+        Route::get('/locum-requests/approved', [LocumRequestController::class, 'approvedLocumRequests'])->name('locum_requests.approved')->middleware('permission:view locum reports');
         // Backward compatibility: actioned method redirects to report
         //         //locum request
 
@@ -913,12 +1021,21 @@ Route::group(['middleware' => 'auth'], function () {
         Route::get('/settings/email', [SettingsController::class, 'emailSettings'])->name('settings.email')->middleware('permission:view settings');
         Route::post('/settings/email/update', [SettingsController::class, 'updateMailSettings'])->name('settings.email.update')->middleware('permission:view settings');
         Route::post('/settings/email/test', [SettingsController::class, 'sendTestEmail'])->name('settings.email.test')->middleware('permission:view settings');
+        Route::post('/settings/email/test-queue', [SettingsController::class, 'sendTestQueueEmail'])->name('settings.email.test-queue')->middleware('permission:view settings');
 
         Route::get('/settings/maintenance', [SettingsController::class, 'maintenanceMode'])->name('settings.maintenance')->middleware('permission:manage maintenance mode');
         Route::post('/settings/maintenance/update', [SettingsController::class, 'updateMaintenanceMode'])->name('settings.maintenance.update')->middleware('permission:manage maintenance mode');
 
         Route::get('/settings/deadlines', [SettingsController::class, 'deadlineSettings'])->name('settings.deadlines')->middleware('permission:view settings');
         Route::post('/settings/deadlines/update', [SettingsController::class, 'updateDeadlineSettings'])->name('settings.deadlines.update')->middleware('permission:view settings');
+
+        Route::get('/settings/jobs', [SettingsController::class, 'jobMonitor'])->name('settings.jobs')->middleware('permission:view settings');
+        Route::post('/settings/jobs/retry/{uuid}', [SettingsController::class, 'retryFailedJob'])->name('settings.jobs.retry')->middleware('permission:view settings');
+        Route::post('/settings/jobs/retry-all', [SettingsController::class, 'retryAllFailedJobs'])->name('settings.jobs.retry-all')->middleware('permission:view settings');
+
+        Route::get('/settings/requisition-flow', function () {
+            return view('settings.requisition-flow');
+        })->name('settings.requisition-flow')->middleware('permission:view settings');
 
         Route::get('/sap', [SapAccessController::class, 'index'])->name('sap.index')->middleware('permission:view sap access');
         Route::get('/sap/create', [SapAccessController::class, 'create'])->name('sap.create')->middleware('role_or_permission:Super-Admin|super-admin|it|view sap access');

@@ -18,10 +18,10 @@
     .status-icon{font-size:24px;margin-right:8px;vertical-align:middle}
     .info-card{background-color:#f8f9fa;border:1px solid #e9ecef;border-radius:8px;padding:20px;margin:25px 0}
     .info-card h3{margin:0 0 15px 0;font-size:16px;color:#007A33;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #007A33;padding-bottom:8px}
-    .info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #e9ecef}
+    .info-row{display:table;width:100%;table-layout:fixed;padding:10px 0;border-bottom:1px solid #e9ecef}
     .info-row:last-child{border-bottom:none}
-    .info-label{font-weight:600;color:#555;flex:1}
-    .info-value{color:#333;flex:1;text-align:right;font-weight:500}
+    .info-label{font-weight:600;color:#555;display:table-cell;width:40%;vertical-align:top}
+    .info-value{color:#333;display:table-cell;width:60%;text-align:right;font-weight:500;vertical-align:top}
     .rejection-reason{background-color:#fff3cd;border:1px solid #ffc107;border-left:4px solid #ffc107;border-radius:6px;padding:15px;margin:20px 0}
     .rejection-reason strong{display:block;color:#856404;margin-bottom:8px;font-size:14px;text-transform:uppercase;letter-spacing:0.5px}
     .rejection-reason p{margin:0;color:#856404;white-space:pre-wrap;word-wrap:break-word}
@@ -33,7 +33,7 @@
     .footer{background-color:#f8f9fa;padding:25px;text-align:center;border-top:1px solid #e9ecef}
     .footer img{max-width:100%;height:auto;margin-bottom:15px}
     .footer-text{font-size:12px;color:#888;margin-top:10px}
-    @media (max-width:600px){.content{padding:20px 15px}.header{padding:25px 15px}.header h1{font-size:22px}.info-row{flex-direction:column}.info-value{text-align:left;margin-top:5px}.action-button{display:block;width:100%;box-sizing:border-box}}
+    @media (max-width:600px){.content{padding:20px 15px}.header{padding:25px 15px}.header h1{font-size:22px}.info-row{display:block}.info-value{display:block;width:100%;text-align:left;margin-top:4px}.action-button{display:block;width:100%;box-sizing:border-box}}
   </style>
 </head>
 <body>

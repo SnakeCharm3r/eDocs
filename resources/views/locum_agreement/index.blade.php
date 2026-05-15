@@ -200,24 +200,70 @@
                 <!-- Preamble -->
                 <div class="pdf-section">
                     <h5>Preamble</h5>
-                    <p>This document, dated <strong>{{ now()->format('d F Y') }}</strong>, serves as a special agreement in
+                    <p>This document, dated <strong>{{ formatOrdinalDate(\Carbon\Carbon::parse($contractStartDate)) }}</strong>, serves as a special agreement
+                        in
                         addition to the existing 'Contract of Employment' between <strong>CCBRT (Comprehensive Community
                             Based Rehabilitation in Tanzania)</strong>, P.O. Box 23310, Dar es Salaam, and
                         <strong>{{ $user->fname ?? 'N/A' }} {{ $user->lname ?? '' }}
                         </strong> residing in Dar es Salaam, hereinafter
                         called the EMPLOYEE.
                     </p>
-                    <p>The EMPLOYEE voluntarily agrees to enter into this agreement for LOCUM work from
-                        <strong>1st July 2025</strong> to <strong>30th June 2026</strong>.
+                    <p>
+                        The EMPLOYEE voluntarily agrees to enter into this agreement for LOCUM work from
+                        <strong>{{ formatOrdinalDate(\Carbon\Carbon::parse($contractStartDate)) }}</strong>
+                        and this agreement will be valid until
+                        <strong>{{ formatOrdinalDate(\Carbon\Carbon::parse($contractEndDate)) }}</strong>.
                     </p>
                 </div>
 
                 @if ($agreement && $agreement->has_contract && $agreement->rejection_status == null)
+                    @php
+                        $agreementEndDate = $agreement->end_date
+                            ? \Carbon\Carbon::parse($agreement->end_date)
+                            : \Carbon\Carbon::parse($agreement->created_at)->addYear();
+                        $today = \Carbon\Carbon::today();
+                        $daysUntilExpiration = $today->diffInDays($agreementEndDate, false);
+                        $isNearExpiration = $daysUntilExpiration <= 60 && $daysUntilExpiration > 0;
+                        $isHrApproved = (int) ($agreement->status ?? 0) === 2;
+                    @endphp
                     <!-- Existing Agreement Details -->
-                    <div class="alert alert-info mb-4">
-                        You have an active locum agreement. You can now <a
-                            href="{{ route('locum-requests.create') }}">request locum work</a>.
-                    </div>
+                    @if (!$isHrApproved)
+                        <div class="alert alert-warning mb-4">
+                            <i class="fas fa-clock me-2"></i>
+                            Your locum agreement is pending HR approval. You cannot request locum work until it is approved.
+                        </div>
+                    @elseif (!empty($expiredButUseUntil) && !empty($expiredAgreementUseUntilDate))
+                        <div class="alert alert-danger mb-4">
+                            <i class="fas fa-times-circle me-2"></i>
+                            Your agreement has expired (expired on <strong>{{ $agreementExpiredOnDate ?? '—' }}</strong>).
+                            Please create a new agreement to continue submitting locum claims.
+                        </div>
+                    @elseif ($isNearExpiration)
+                        <div class="alert alert-warning mb-4">
+                            <i class="fas fa-clock me-2"></i>
+                            Your locum agreement is expiring soon (valid until
+                            <strong>{{ $agreementEndDate->format('j F Y') }}</strong>).
+                            You can <a href="{{ route('locum-requests.create') }}">request locum work</a> or create a new
+                            agreement below for continued coverage.
+                        </div>
+                    @else
+                        @php
+                            $isActuallyActive = $agreementEndDate->gt($today);
+                        @endphp
+                        @if ($isActuallyActive)
+                            <div class="alert alert-info mb-4">
+                                You have an active locum agreement (valid until
+                                <strong>{{ $agreementEndDate->format('j F Y') }}</strong>). You can now <a
+                                    href="{{ route('locum-requests.create') }}">request locum work</a>.
+                            </div>
+                        @else
+                            <div class="alert alert-danger mb-4">
+                                <i class="fas fa-times-circle me-2"></i>
+                                Your agreement has expired (expired on <strong>{{ $agreementEndDate->format('j F Y') }}</strong>).
+                                Please create a new agreement to continue submitting locum claims.
+                            </div>
+                        @endif
+                    @endif
 
                     <!-- Output Criteria -->
                     <div class="pdf-section">
@@ -257,7 +303,8 @@
                             </tr>
                             <tr>
                                 <th>Locum Rate</th>
-                                <td>TZS {{ $agreement->locum_rate ? number_format($agreement->locum_rate, 2) : 'N/A' }}</td>
+                                <td>TZS {{ $agreement->locum_rate ? number_format($agreement->locum_rate, 2) : 'N/A' }}
+                                </td>
                             </tr>
                             {{-- <tr>
                                 <th>Date of Locum Work</th>
@@ -265,14 +312,61 @@
                             </tr> --}}
                         </table>
                     </div>
-                @else
-                    <!-- Locum Agreement Form -->
-                    <div class="pdf-section">
-                        {{-- <h5>Create Locum Agreement</h5> --}}
+                    <div class="alert alert-secondary mb-4">
+                        <strong>Request a new agreement:</strong> You can submit a new agreement below. It will be used for
+                        claims <strong>only after HR approves it</strong>. Until then, your current agreement above remains
+                        in use.
+                    </div>
+                @endif
+
+                <!-- Locum Agreement Form (create or request new agreement) -->
+                <div class="pdf-section">
+                    @if (!empty($hasPendingAgreement))
+                        <div class="alert alert-info mb-4">
+                            <div class="fw-semibold">
+                                <i class="fas fa-clock me-2"></i>You already have a locum agreement pending approval.
+                            </div>
+                            <div class="small mt-2">
+                                Please wait for your current agreement to be processed before submitting a new one.
+                                You can check the status on the
+                                <a href="{{ route('locum-agreements.view') }}">My Agreements</a> page.
+                            </div>
+                        </div>
+                        <div class="button-group d-flex justify-content-start">
+                            <a href="{{ route('locum-requests.index') }}" class="btn btn-secondary me-2">
+                                <i class="fas fa-arrow-left"></i> Back
+                            </a>
+                            <a href="{{ route('locum-agreements.view') }}" class="btn btn-primary">
+                                <i class="fas fa-eye me-1"></i> View Agreement Status
+                            </a>
+                        </div>
+                    @elseif (!empty($hasActiveNonExpiredAgreement))
+                        <div class="alert alert-success mb-4">
+                            <div class="fw-semibold">
+                                <i class="fas fa-check-circle me-2"></i>You already have an active locum agreement.
+                            </div>
+                            <div class="small mt-2">
+                                You cannot create a new agreement until your current one expires.
+                                You can view your agreements on the
+                                <a href="{{ route('locum-agreements.view') }}">My Agreements</a> page.
+                            </div>
+                        </div>
+                        <div class="button-group d-flex justify-content-start">
+                            <a href="{{ route('locum-requests.index') }}" class="btn btn-secondary me-2">
+                                <i class="fas fa-arrow-left"></i> Back
+                            </a>
+                            <a href="{{ route('locum-agreements.view') }}" class="btn btn-primary">
+                                <i class="fas fa-eye me-1"></i> View My Agreements
+                            </a>
+                        </div>
+                    @else
+                        @if ($agreement && $agreement->has_contract && $agreement->rejection_status == null)
+                            <h5 class="mb-3">Request New Agreement</h5>
+                        @endif
                         <form action="{{ route('locum-agreements.store') }}" method="POST">
                             @csrf
-                            <input type="hidden" name="start_date" value="2025-07-01">
-                            <input type="hidden" name="end_date" value="2026-06-30">
+                            <input type="hidden" name="start_date" value="{{ $contractStartDate }}">
+                            <input type="hidden" name="end_date" value="{{ $contractEndDate }}">
 
                             <!-- Output Criteria -->
                             <div class="pdf-section">
@@ -297,7 +391,7 @@
                                     <li>The applicable locum rate is based on education level as per CCBRT guidelines.</li>
                                     <li>Daily claims must be signed by both Employee and Supervisor.</li>
                                     <li>Daily claims are processed to the payroll desk for payment through the payroll.</li>
-                                    <li>Claims received before the 10th of the next month are processed in that month’s
+                                    <li>Claims received before the 10th of the next month are processed in that month's
                                         payroll. Late submissions are processed the following month.</li>
                                     <li>All locum payments are subject to statutory deductions.</li>
                                 </ol>
@@ -313,25 +407,24 @@
                                             <select
                                                 class="form-control {{ $errors->has('education_level') ? 'is-invalid' : '' }}"
                                                 id="education_level" name="education_level" required>
-                                                <option value="" disabled selected>Select Education Level as per Job Advertisement
+                                                <option value="" disabled selected>Select Education Level as per Job
+                                                    Advertisement
                                                 </option>
-
-                                                <option value="Certificate"
-                                                    {{ old('education_level') == 'Certificate' ? 'selected' : '' }}>
-                                                    Certificate</option>
-                                                <option value="Enrolled_Certificate"
-                                                    {{ old('education_level') == 'Enrolled_Certificate' ? 'selected' : '' }}>
-                                                    Enrolled_Certificate</option>
-                                                <option value="Diploma"
-                                                    {{ old('education_level') == 'Diploma' ? 'selected' : '' }}>Diploma
-                                                </option>
-                                                <option value="Degree"
-                                                    {{ old('education_level') == 'Degree' ? 'selected' : '' }}>Degree
-                                                </option>
-                                                <option value="Masters"
-                                                    {{ old('education_level') == 'Masters' ? 'selected' : '' }}>Masters
-                                                </option>
+                                                @forelse ($locumRates as $rate)
+                                                    <option value="{{ $rate->education_level }}"
+                                                        {{ old('education_level') == $rate->education_level ? 'selected' : '' }}
+                                                        data-rate="{{ $rate->rate }}">
+                                                        {{ $rate->education_level }} — TZS {{ number_format($rate->rate, 0) }}
+                                                    </option>
+                                                @empty
+                                                    <option value="" disabled>No active rates. Add active rates in Locum
+                                                        Rates settings.</option>
+                                                @endforelse
                                             </select>
+                                            @if ($locumRates->isEmpty())
+                                                <small class="text-muted">Rates are loaded from <strong>Manage Locum
+                                                        Rates</strong> (only rates marked Active).</small>
+                                            @endif
                                             @error('education_level')
                                                 <div class="invalid-feedback">{{ $message }}</div>
                                             @enderror
@@ -350,9 +443,9 @@
                                         </td>
                                     </tr>
                                     {{-- <tr>
-                                        <th>Date of Locum Work</th>
-                                        <td>N/A (To be specified in Locum Requests)</td>
-                                    </tr> --}}
+                                            <th>Date of Locum Work</th>
+                                            <td>N/A (To be specified in Locum Requests)</td>
+                                        </tr> --}}
                                 </table>
                             </div>
 
@@ -367,42 +460,26 @@
                             </div>
 
                         </form>
-                    </div>
-                @endif
+                    @endif
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        document.getElementById('education_level').addEventListener('change', function() {
-            const educationLevel = this.value;
-            const locumRateInput = document.getElementById('locum_rate');
-            let rate = 0;
+        const educationLevelSelect = document.getElementById('education_level');
+        if (educationLevelSelect) {
+            educationLevelSelect.addEventListener('change', function() {
+                const selectedOption = this.options[this.selectedIndex];
+                const rate = selectedOption.getAttribute('data-rate') || 0;
+                const locumRateInput = document.getElementById('locum_rate');
+                if (locumRateInput) locumRateInput.value = rate;
+            });
 
-            switch (educationLevel) {
-                case 'Certificate':
-                    rate = 50000;
-                    break;
-                case 'Enrolled_Certificate':
-                    rate = 60000;
-                    break;
-                case 'Diploma':
-                    rate = 80000;
-                    break;
-                case 'Degree':
-                    rate = 100000;
-                    break;
-                case 'Masters':
-                    rate = 120000;
-                    break;
-                default:
-                    rate = 0;
+            // Trigger change event on page load if a value is selected
+            if (educationLevelSelect.value) {
+                educationLevelSelect.dispatchEvent(new Event('change'));
             }
-
-            locumRateInput.value = rate;
-        });
-
-        // Trigger change event on page load
-        document.getElementById('education_level').dispatchEvent(new Event('change'));
+        }
     </script>
 @endsection

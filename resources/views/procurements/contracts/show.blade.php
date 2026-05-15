@@ -2,203 +2,95 @@
 @section('breadcrumb')
     @include('sweetalert::alert')
 @endsection
+@push('styles')
+<style>
+    .contract-banner { border-left: 5px solid #dee2e6; }
+    .contract-banner.status-active    { border-left-color: #28a745; }
+    .contract-banner.status-expired   { border-left-color: #dc3545; }
+    .contract-banner.status-expiring  { border-left-color: #ffc107; }
+    .contract-banner.status-draft     { border-left-color: #6c757d; }
+    .contract-banner.status-terminated{ border-left-color: #343a40; }
+    .stat-pill { background: #f8f9fa; border-radius: 0.5rem; padding: 0.6rem 1rem; }
+    .info-item { border-radius: 0.5rem; }
+    .section-card { border:0; border-radius:10px; box-shadow:0 1px 6px rgba(0,0,0,.07); margin-bottom:.75rem; }
+    .section-card .card-header { background:#f8fdf9; border-bottom:1px solid #d1e7dd; border-radius:10px 10px 0 0!important; padding:.5rem 1rem; }
+    .section-card .card-header h6 { margin:0; font-size:.82rem; font-weight:600; color:#198754; }
+</style>
+@endpush
 @section('content')
     <div class="page-wrapper">
         <div class="content container-fluid">
-            <div class="page-header">
-                <div class="row align-items-center">
-                    <div class="col">
-                        <h3 class="page-title">
-                            <i class="fas fa-file-contract me-2"></i>Contract Details
-                        </h3>
+            @php
+                $user         = auth()->user();
+                $canEdit      = $user && $user->hasAnyRole(['procurement-officer', 'hr', 'super-admin']);
+                $st           = $contract->status ?? 'draft';
+                $bannerClass  = match(true) {
+                    $st === 'active'                                       => 'status-active',
+                    in_array($st, ['expired','terminated','rejected'])     => 'status-expired',
+                    $st === 'soonToExpire'                                 => 'status-expiring',
+                    $st === 'draft'                                        => 'status-draft',
+                    default                                                => '',
+                };
+                $stColors  = ['active'=>'success','expired'=>'danger','soonToExpire'=>'warning','draft'=>'secondary','in_progress'=>'info','renewed'=>'primary','terminated'=>'dark'];
+                $stColor   = $stColors[$st] ?? 'secondary';
+                $stLabel   = $st === 'soonToExpire' ? 'Soon to Expire' : ucfirst(str_replace('_',' ',$st));
 
-                    </div>
-                    <div class="col-auto">
-                        <a href="{{ route('procurements.contracts.index') }}" class="btn btn-secondary">
-                            <i class="fas fa-arrow-left me-1"></i> Back to List
-                        </a>
-                        @php
-                            $user = auth()->user();
-                            // Only Procurement Officers, HR, and Super Admins can edit contracts
-                            // Line Managers and HEC members are NOT allowed to edit
-                            $canEdit = $user && $user->hasAnyRole(['procurement-officer', 'hr', 'super-admin']);
-                        @endphp
-                        @if ($canEdit)
-                            <a href="{{ route('procurements.contracts.edit', $contract->id) }}" class="btn btn-primary">
-                                <i class="fas fa-edit me-1"></i> Edit
-                            </a>
+                $vEnd  = $contract->end_date  ? \Carbon\Carbon::parse($contract->end_date)  : null;
+                $vStart= $contract->start_date? \Carbon\Carbon::parse($contract->start_date): null;
+                $vDays = $vEnd ? \Carbon\Carbon::now()->diffInDays($vEnd, false) : null;
+                if ($vDays !== null) {
+                    if ($vDays < 0)       { $vTxt = 'Expired '.abs($vDays).' days ago';   $vCls = 'danger'; }
+                    elseif ($vDays == 0)  { $vTxt = 'Expires today';                       $vCls = 'danger'; }
+                    elseif ($vDays <= 30) { $vTxt = $vDays.' days left';                   $vCls = 'warning'; }
+                    elseif ($vDays <= 365){ $vTxt = round($vDays/30).' months left';       $vCls = 'success'; }
+                    else { $vYr=floor($vDays/365); $vMo=round(($vDays%365)/30); $vTxt=$vYr.'y '.($vMo>0?$vMo.'m ':'').'left'; $vCls='success'; }
+                } else { $vTxt = 'No end date'; $vCls = 'secondary'; }
+            @endphp
+
+            {{-- Header Card --}}
+            <div class="card shadow-sm border-0 mb-3 contract-banner {{ $bannerClass }}">
+                <div class="card-body p-3">
+                    <div class="d-flex align-items-start gap-2 mb-1 flex-wrap">
+                        <span class="badge bg-{{ $stColor }}">{{ $stLabel }}</span>
+                        @if ($contract->parent_contract_id)
+                            <span class="badge bg-secondary">Renewal Term {{ $contract->renewal_term_number ?? 2 }}</span>
+                        @elseif($contract->renewals && $contract->renewals->count() > 0)
+                            <span class="badge bg-secondary">First Contract</span>
+                            <span class="text-muted small">{{ $contract->renewals->count() }} renewal(s)</span>
                         @endif
+                    </div>
+                    <h6 class="mb-1 text-dark fw-semibold" style="font-size:.92rem;">{{ $contract->title }}</h6>
+                    <div class="d-flex flex-wrap gap-3 text-muted" style="font-size:.78rem;" class="mb-2">
+                        @if ($contract->contract_number)
+                            <span><i class="fas fa-hashtag me-1"></i>#{{ $contract->contract_number }}</span>
+                        @endif
+                        @if ($contract->division)
+                            <span><i class="fas fa-sitemap me-1"></i>{{ $contract->division->name }}</span>
+                        @endif
+                        @if ($contract->department)
+                            <span><i class="fas fa-briefcase me-1"></i>{{ $contract->department->dept_name }}</span>
+                        @endif
+                        @if ($contract->vendor)
+                            <span><i class="fas fa-building me-1"></i>{{ $contract->vendor->name }}</span>
+                        @endif
+                    </div>
+                    {{-- Compact stats inline --}}
+                    <div class="d-flex flex-wrap gap-3" style="font-size:.8rem;">
+                        <span class="text-muted"><i class="fas fa-money-bill-wave me-1"></i><strong class="text-dark">{{ number_format($contract->cost ?? 0, 0, '.', ',') }}</strong> {{ $contract->currency ?? 'TZS' }}</span>
+                        <span class="text-muted"><i class="fas fa-calendar-check me-1"></i>{{ $vStart ? $vStart->format('d M Y') : '—' }} → {{ $vEnd ? $vEnd->format('d M Y') : '—' }}</span>
+                        <span class="text-{{ $vCls }} fw-semibold"><i class="fas fa-clock me-1"></i>{{ $vTxt }}</span>
                     </div>
                 </div>
             </div>
 
             <div class="row">
-                <!-- Status Overview Card -->
-                <div class="col-lg-12 mb-4">
-                    <div class="card shadow-sm border-0 bg-white">
-                        <div class="card-body p-4">
-                            <div class="row align-items-center">
-                                <div class="col-md-8">
-                                    <h3 class="mb-2 text-dark">
-                                        <i class="fas fa-file-contract me-2 text-muted"></i>{{ $contract->title }}
-                                    </h3>
-                                    <p class="mb-0 text-muted">
-                                        <i class="fas fa-hashtag me-1"></i>Contract
-                                        #{{ $contract->contract_number ?? 'N/A' }}
-                                    </p>
-                                    @if ($contract->parent_contract_id)
-                                        <p class="mb-0 mt-2">
-                                            <span class="badge bg-secondary">Renewal Term
-                                                {{ $contract->renewal_term_number ?? 2 }}</span>
-                                            @if ($contract->parentContract)
-                                                <a href="{{ route('procurements.contracts.show', $contract->parent_contract_id) }}"
-                                                    class="text-decoration-none ms-2">
-                                                    <i class="fas fa-link me-1"></i>View First Contract
-                                                </a>
-                                            @endif
-                                        </p>
-                                    @elseif($contract->renewals && $contract->renewals->count() > 0)
-                                        <p class="mb-0 mt-2">
-                                            <span class="badge bg-secondary">First Contract</span>
-                                            <span class="text-muted ms-2">{{ $contract->renewals->count() }}
-                                                renewal(s)</span>
-                                        </p>
-                                    @endif
-                                </div>
-                                <div class="col-md-4 text-end">
-                                    @php
-                                        $statusLabel = match ($contract->status ?? 'draft') {
-                                            'soonToExpire' => 'Soon To Expire',
-                                            default => ucfirst($contract->status ?? 'Draft'),
-                                        };
-                                    @endphp
-                                    <span class="badge bg-secondary text-white fs-6 px-3 py-2 mb-2 d-inline-block">
-                                        {{ $statusLabel }}
-                                    </span>
-                                    <div class="mt-2">
-                                        <small class="text-muted">
-                                            <i class="fas fa-calendar-alt me-1"></i>
-                                            @if ($contract->end_date)
-                                                @php
-                                                    $endDate = \Carbon\Carbon::parse($contract->end_date);
-                                                    $today = \Carbon\Carbon::now();
-                                                    $daysRemaining = $today->diffInDays($endDate, false);
-                                                @endphp
-                                                @if ($daysRemaining < 0)
-                                                    Expired {{ abs($daysRemaining) }} days ago
-                                                @elseif($daysRemaining <= 30)
-                                                    Expires in {{ $daysRemaining }} days
-                                                @else
-                                                    {{ $endDate->format('M d, Y') }}
-                                                @endif
-                                            @else
-                                                No end date set
-                                            @endif
-                                        </small>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Sidebar with Quick Stats -->
-                <div class="col-lg-4 mb-4">
-                    <!-- Quick Stats Card -->
-                    <div class="card shadow-sm border-0 mb-4">
-                        <div class="card-header bg-white border-bottom">
-                            <h6 class="mb-0 text-dark">
-                                <i class="fas fa-chart-bar me-2"></i>Quick Stats
-                            </h6>
-                        </div>
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
-                                <div>
-                                    <small class="text-muted d-block">Contract Value</small>
-                                    <strong class="text-dark">{{ number_format($contract->cost ?? 0, 0) }}
-                                        {{ $contract->currency ?? 'TZS' }}</strong>
-                                </div>
-                                <i class="fas fa-money-bill-wave fa-2x text-muted opacity-25"></i>
-                            </div>
-                            <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
-                                <div>
-                                    <small class="text-muted d-block">Duration</small>
-                                    <strong class="text-dark">{{ $contract->duration_months ?? 'N/A' }} months</strong>
-                                </div>
-                                <i class="fas fa-calendar-alt fa-2x text-muted opacity-25"></i>
-                            </div>
-                            @if ($contract->end_date)
-                                @php
-                                    $endDate = \Carbon\Carbon::parse($contract->end_date);
-                                    $today = \Carbon\Carbon::now();
-                                    $daysRemaining = $today->diffInDays($endDate, false);
-                                @endphp
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <small class="text-muted d-block">Days Remaining</small>
-                                        <strong class="text-dark">
-                                            {{ $daysRemaining < 0 ? abs($daysRemaining) . ' days ago' : $daysRemaining . ' days' }}
-                                        </strong>
-                                    </div>
-                                    <i class="fas fa-clock fa-2x text-muted opacity-25"></i>
-                                </div>
-                            @endif
-                        </div>
-                    </div>
-
-                    <!-- Actions Card -->
-                    <div class="card shadow-sm border-0">
-                        <div class="card-header bg-white border-bottom">
-                            <h6 class="mb-0 text-dark">
-                                <i class="fas fa-bolt me-2"></i>Quick Actions
-                            </h6>
-                        </div>
-                        <div class="card-body">
-                            <div class="d-grid gap-2">
-                                <a href="{{ route('procurements.contracts.index') }}"
-                                    class="btn btn-outline-secondary btn-sm">
-                                    <i class="fas fa-arrow-left me-1"></i> Back to List
-                                </a>
-                                @php
-                                    $user = auth()->user();
-                                    $canEdit = $user && $user->hasAnyRole(['procurement-officer', 'hr', 'super-admin']);
-                                @endphp
-                                @if ($canEdit)
-                                    <a href="{{ route('procurements.contracts.edit', $contract->id) }}"
-                                        class="btn btn-outline-primary btn-sm">
-                                        <i class="fas fa-edit me-1"></i> Edit Contract
-                                    </a>
-                                @endif
-                                @if (auth()->user()->hasRole('super-admin'))
-                                    <form action="{{ route('procurements.contracts.destroy', $contract->id) }}"
-                                        method="POST" class="d-inline"
-                                        onsubmit="return confirm('Are you sure you want to delete this contract? This action cannot be undone.');">
-                                        @csrf
-                                        @method('DELETE')
-                                        <button type="submit" class="btn btn-danger btn-sm w-100">
-                                            <i class="fas fa-trash me-1"></i> Delete Contract
-                                        </button>
-                                    </form>
-                                @endif
-                                @if ($contract->file_path || $contract->signed_contract_path)
-                                    <a href="{{ route('procurements.contracts.document', $contract->id) }}?type=file_path"
-                                        target="_blank" class="btn btn-outline-danger btn-sm">
-                                        <i class="fas fa-file-pdf me-1"></i> View Document
-                                    </a>
-                                @endif
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Main Content -->
-                <div class="col-lg-8">
+                <div class="col-lg-8 order-lg-1 mb-4">
+                    <div>{{-- inner wrapper for seamless content flow --}}</div>
                     <!-- Contract Information Section -->
-                    <div class="card shadow-sm mb-4 border-0">
-                        <div class="card-header bg-white border-bottom">
-                            <h5 class="mb-0 text-dark">
-                                <i class="fas fa-info-circle me-2"></i>Contract Information
-                            </h5>
+                    <div class="card section-card">
+                        <div class="card-header">
+                            <h6><i class="fas fa-info-circle me-2"></i>Contract Information</h6>
                         </div>
                         <div class="card-body">
                             <div class="row g-3">
@@ -343,11 +235,9 @@
 
                     <!-- Contract Chain & History Section -->
                     @if (isset($contractChain) && $contractChain->count() > 0)
-                        <div class="card shadow-sm mb-4 border-0">
-                            <div class="card-header bg-white border-bottom">
-                                <h5 class="mb-0 text-dark">
-                                    <i class="fas fa-history me-2"></i>Contract History & Financial Details
-                                </h5>
+                        <div class="card section-card">
+                            <div class="card-header">
+                                <h6><i class="fas fa-history me-2"></i>Contract History &amp; Financial Details</h6>
                             </div>
                             <div class="card-body">
                                 @php
@@ -511,12 +401,89 @@
                                                             <i class="fas fa-star me-1"></i>Evaluation Score
                                                         </label>
                                                         <div class="fw-bold text-dark">
-                                                            {{ number_format($contractItem->evaluation_score, 2) }}/5
+                                                            {{ number_format(min((float) $contractItem->evaluation_score, 5), 2) }}/5
                                                         </div>
                                                     </div>
                                                 </div>
                                             @endif
                                         </div>
+
+                                        @php
+                                            $prevItem = null;
+                                            if (isset($contractChain) && method_exists($contractChain, 'values')) {
+                                                $idx = $loop->index ?? null;
+                                                $prevItem = is_int($idx) && $idx > 0 ? ($contractChain->values()[$idx - 1] ?? null) : null;
+                                            }
+
+                                            $fmtDate = function ($d) {
+                                                return $d ? \Carbon\Carbon::parse($d)->format('Y-m-d') : '-';
+                                            };
+                                            $fmtMoney = function ($v, $cur) {
+                                                return number_format((float) ($v ?? 0), 2) . ' ' . ($cur ?? 'TZS');
+                                            };
+                                            $vendorName = function ($c) {
+                                                return $c && $c->vendor ? ($c->vendor->name ?? '-') : '-';
+                                            };
+                                            $docVal = function ($p) {
+                                                return !empty($p) ? 'Yes' : 'No';
+                                            };
+
+                                            $changes = [];
+                                            if ($prevItem) {
+                                                $changes = [
+                                                    'Vendor' => [$vendorName($prevItem), $vendorName($contractItem)],
+                                                    'Contract type' => [$prevItem->contract_type ?? '-', $contractItem->contract_type ?? '-'],
+                                                    'Start date' => [$fmtDate($prevItem->start_date ?? null), $fmtDate($contractItem->start_date ?? null)],
+                                                    'End date' => [$fmtDate($prevItem->end_date ?? null), $fmtDate($contractItem->end_date ?? null)],
+                                                    'Duration (months)' => [$prevItem->duration_months ?? '-', $contractItem->duration_months ?? '-'],
+                                                    'Value' => [$fmtMoney($prevItem->cost ?? 0, $prevItem->currency ?? 'TZS'), $fmtMoney($contractItem->cost ?? 0, $contractItem->currency ?? 'TZS')],
+                                                    'Main document' => [$docVal($prevItem->file_path ?? null), $docVal($contractItem->file_path ?? null)],
+                                                    'Signed contract' => [$docVal($prevItem->signed_contract_path ?? null), $docVal($contractItem->signed_contract_path ?? null)],
+                                                    'TOR document' => [$docVal($prevItem->terms_of_reference_path ?? null), $docVal($contractItem->terms_of_reference_path ?? null)],
+                                                    'SLA document' => [$docVal($prevItem->sla_document_path ?? null), $docVal($contractItem->sla_document_path ?? null)],
+                                                    'Terms & conditions' => [$docVal($prevItem->terms_conditions_path ?? null), $docVal($contractItem->terms_conditions_path ?? null)],
+                                                ];
+                                            }
+                                        @endphp
+
+                                        @if ($prevItem)
+                                            <div class="mt-3">
+                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                    <strong class="text-dark">Changes from previous term</strong>
+                                                    <small class="text-muted">Compare Term {{ $prevItem->renewal_term_number ?? 1 }} → Term {{ $termNumber }}</small>
+                                                </div>
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm table-bordered align-middle mb-0">
+                                                        <thead class="table-light">
+                                                            <tr>
+                                                                <th style="width: 30%;">Field</th>
+                                                                <th style="width: 35%;">Previous</th>
+                                                                <th style="width: 35%;">New</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            @foreach ($changes as $label => $vals)
+                                                                @php
+                                                                    $oldVal = (string) ($vals[0] ?? '-');
+                                                                    $newVal = (string) ($vals[1] ?? '-');
+                                                                    $changed = trim($oldVal) !== trim($newVal);
+                                                                @endphp
+                                                                <tr class="{{ $changed ? 'table-warning' : '' }}">
+                                                                    <td class="fw-semibold">{{ $label }}</td>
+                                                                    <td>{{ $oldVal }}</td>
+                                                                    <td>{{ $newVal }}</td>
+                                                                </tr>
+                                                            @endforeach
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <div class="mt-2">
+                                                    <small class="text-muted">
+                                                        Tip: use this to track what was updated during renewal (dates, value, vendor, documents).
+                                                    </small>
+                                                </div>
+                                            </div>
+                                        @endif
                                     </div>
 
                                     @if (!$loop->last)
@@ -530,11 +497,9 @@
                     @endif
 
                     <!-- Contract Parties Section -->
-                    <div class="card shadow-sm mb-4 border-0">
-                        <div class="card-header bg-white border-bottom">
-                            <h5 class="mb-0 text-dark">
-                                <i class="fas fa-users me-2"></i>Contract Parties
-                            </h5>
+                    <div class="card section-card">
+                        <div class="card-header">
+                            <h6><i class="fas fa-users me-2"></i>Contract Parties</h6>
                         </div>
                         <div class="card-body">
                             <div class="row g-3">
@@ -626,11 +591,9 @@
                     </div>
 
                     <!-- Financial Details Section -->
-                    <div class="card shadow-sm mb-4 border-0">
-                        <div class="card-header bg-white border-bottom">
-                            <h5 class="mb-0 text-dark">
-                                <i class="fas fa-money-bill-wave me-2"></i>Financial Details
-                            </h5>
+                    <div class="card section-card">
+                        <div class="card-header">
+                            <h6><i class="fas fa-coins me-2"></i>Financial Details</h6>
                         </div>
                         <div class="card-body">
                             <div class="row g-3">
@@ -639,9 +602,9 @@
                                         <label class="text-muted small mb-2 d-block">
                                             <i class="fas fa-money-bill-wave me-1"></i>Contract Value
                                         </label>
-                                        <div class="display-6 fw-bold text-dark">
+                                        <div class="fw-bold text-dark" style="font-size:1.3rem;">
                                             {{ number_format($contract->cost ?? 0, 2, '.', ',') }}
-                                            <span class="fs-4">{{ $contract->currency ?? 'TZS' }}</span>
+                                            <span class="text-muted" style="font-size:.9rem;">{{ $contract->currency ?? 'TZS' }}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -651,11 +614,9 @@
 
                     <!-- Risk Assessment Section (if available) -->
                     @if ($contract->likelihood_rating || $contract->impact_if_not_requested || $contract->overall_risk)
-                        <div class="card shadow-sm mb-4 border-0">
-                            <div class="card-header bg-white border-bottom">
-                                <h5 class="mb-0 text-dark">
-                                    <i class="fas fa-exclamation-triangle me-2"></i>Risk Assessment
-                                </h5>
+                        <div class="card section-card">
+                            <div class="card-header">
+                                <h6><i class="fas fa-exclamation-triangle me-2"></i>Risk Assessment</h6>
                             </div>
                             <div class="card-body">
                                 <div class="row g-3">
@@ -701,11 +662,9 @@
                     @endif
 
                     <!-- Documents & Attachments Section -->
-                    <div class="card shadow-sm mb-4 border-0">
-                        <div class="card-header bg-white border-bottom">
-                            <h5 class="mb-0 text-dark">
-                                <i class="fas fa-paperclip me-2"></i>Documents & Attachments
-                            </h5>
+                    <div class="card section-card">
+                        <div class="card-header">
+                            <h6><i class="fas fa-paperclip me-2"></i>Documents &amp; Attachments</h6>
                         </div>
                         <div class="card-body">
                             <div class="row g-2">
@@ -716,7 +675,7 @@
                                             class="document-card d-block p-3 bg-light rounded text-decoration-none text-dark border hover-shadow">
                                             <div class="d-flex align-items-center">
                                                 <div class="document-icon me-3">
-                                                    <i class="fas fa-file-pdf fa-2x text-muted"></i>
+                                                    <i class="fas fa-file-pdf fa-lg text-muted"></i>
                                                 </div>
                                                 <div class="flex-grow-1">
                                                     <div class="fw-bold">Contract Document</div>
@@ -734,7 +693,7 @@
                                             class="document-card d-block p-3 bg-light rounded text-decoration-none text-dark border hover-shadow">
                                             <div class="d-flex align-items-center">
                                                 <div class="document-icon me-3">
-                                                    <i class="fas fa-file-signature fa-2x text-muted"></i>
+                                                    <i class="fas fa-file-signature fa-lg text-muted"></i>
                                                 </div>
                                                 <div class="flex-grow-1">
                                                     <div class="fw-bold">Signed Contract</div>
@@ -752,7 +711,7 @@
                                             class="document-card d-block p-3 bg-light rounded text-decoration-none text-dark border hover-shadow">
                                             <div class="d-flex align-items-center">
                                                 <div class="document-icon me-3">
-                                                    <i class="fas fa-file-contract fa-2x text-muted"></i>
+                                                    <i class="fas fa-file-contract fa-lg text-muted"></i>
                                                 </div>
                                                 <div class="flex-grow-1">
                                                     <div class="fw-bold">Terms & Conditions</div>
@@ -770,7 +729,7 @@
                                             class="document-card d-block p-3 bg-light rounded text-decoration-none text-dark border hover-shadow">
                                             <div class="d-flex align-items-center">
                                                 <div class="document-icon me-3">
-                                                    <i class="fas fa-file-alt fa-2x text-muted"></i>
+                                                    <i class="fas fa-file-alt fa-lg text-muted"></i>
                                                 </div>
                                                 <div class="flex-grow-1">
                                                     <div class="fw-bold">SLA Document</div>
@@ -788,7 +747,7 @@
                                             class="document-card d-block p-3 bg-light rounded text-decoration-none text-dark border hover-shadow">
                                             <div class="d-flex align-items-center">
                                                 <div class="document-icon me-3">
-                                                    <i class="fas fa-file-contract fa-2x text-muted"></i>
+                                                    <i class="fas fa-file-contract fa-lg text-muted"></i>
                                                 </div>
                                                 <div class="flex-grow-1">
                                                     <div class="fw-bold">Terms of Reference (TOR)</div>
@@ -818,7 +777,7 @@
 
                     @php
                         $user = auth()->user();
-                        $isHecMember = $user && $user->hasAnyRole(['coo', 'cfo', 'cms', 'crhdo']);
+                        $isHecMember = $user && $user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
 
                         // Direct check for HEC approval - simplified and reliable
                         $canHecApprove =
@@ -831,7 +790,7 @@
 
                     @if ($canHecApprove)
                         <!-- HEC Member Approval Section -->
-                        <div class="mb-4">
+                        <div class="mb-4" id="approvalSection">
                             <div class="card border-0">
                                 <div class="card-header bg-white border-bottom">
                                     <h6 class="mb-0 text-dark">
@@ -843,17 +802,35 @@
                                         $isRenewal =
                                             $contract->renewal_status === 'pending' ||
                                             $contract->lifecycle_stage === 'renewal';
+
+                                        // Latest Line Manager workflow remark (includes comments if provided)
+                                        $lmLastRemark = null;
+                                        try {
+                                            $histories = null;
+                                            if (method_exists($contract, 'workflow') && $contract->relationLoaded('workflow') && $contract->workflow && $contract->workflow->relationLoaded('histories')) {
+                                                $histories = $contract->workflow->histories;
+                                            } elseif (method_exists($contract, 'workflows') && $contract->relationLoaded('workflows') && $contract->workflows) {
+                                                $histories = $contract->workflows->flatMap(fn ($wf) => $wf->histories ?? collect());
+                                            }
+
+                                            if ($histories) {
+                                                $lmLastRemark = $histories
+                                                    ->where('step_name', 'Line Manager')
+                                                    ->sortByDesc('created_at')
+                                                    ->first()
+                                                    ?->remark;
+                                            }
+                                        } catch (\Throwable $e) {
+                                            $lmLastRemark = null;
+                                        }
                                     @endphp
-                                    <div class="alert alert-light border">
-                                        <i class="fas fa-info-circle me-2"></i>
-                                        <strong>Action Required:</strong> This contract{{ $isRenewal ? ' renewal' : '' }}
-                                        has been
-                                        forwarded to you for review and rating. Please rate the contract and approve or
-                                        reject it.
-                                        @if ($isRenewal)
-                                            <br><small><strong>Note:</strong> If you reject this renewal, the contract will
-                                                be
-                                                terminated with the reason you provide.</small>
+                                    <div class="alert alert-light border py-2">
+                                        <i class="fas fa-info-circle me-1"></i>
+                                        Rate this contract{{ $isRenewal ? ' renewal' : '' }} and <strong>Approve</strong> or <strong>Reject</strong> it.
+                                        @if (!empty($lmLastRemark))
+                                            <div class="mt-2 p-2 bg-white border rounded small text-dark">
+                                                <span class="text-muted fw-semibold">LM note:</span> {{ $lmLastRemark }}
+                                            </div>
                                         @endif
                                     </div>
 
@@ -870,8 +847,11 @@
                                                         </label>
                                                         <div class="d-flex align-items-center">
                                                             <div class="rating-display me-2">
+                                                                @php
+                                                                    $lmRating = (int) ($contract->line_manager_rating ?? 0);
+                                                                @endphp
                                                                 @for ($i = 1; $i <= 5; $i++)
-                                                                    @if ($i <= $contract->line_manager_rating)
+                                                                    @if ($i <= min($lmRating, 5))
                                                                         <i class="fas fa-star text-muted"></i>
                                                                     @else
                                                                         <i class="far fa-star text-muted"></i>
@@ -879,57 +859,12 @@
                                                                 @endfor
                                                             </div>
                                                             <strong
-                                                                class="text-dark">{{ number_format($contract->line_manager_rating, 1) }}/5</strong>
+                                                                class="text-dark">{{ number_format(min($lmRating, 5), 1) }}/5</strong>
                                                         </div>
                                                     </div>
                                                 </div>
                                             </div>
                                         @endif
-
-                                        <div class="mb-4">
-                                            <label for="hec_rating" class="form-label mb-3">
-                                                <strong class="d-block mb-1">Contract Rating <span
-                                                        class="text-danger">*</span></strong>
-                                                <small class="text-muted">Rate the performance of this contract (1-5
-                                                    scale)</small>
-                                            </label>
-
-                                            <div class="rating-container p-4 bg-light rounded border">
-                                                <div class="star-rating mb-3" data-rating-id="hec_rating">
-                                                    <input type="hidden" id="hec_rating" name="hec_rating"
-                                                        value="" required>
-                                                    <div class="stars d-flex justify-content-center gap-2">
-                                                        <span class="star" data-value="1" data-bs-toggle="tooltip"
-                                                            data-bs-placement="top" title="Poor">
-                                                            <i class="far fa-star fa-2x"></i>
-                                                        </span>
-                                                        <span class="star" data-value="2" data-bs-toggle="tooltip"
-                                                            data-bs-placement="top" title="Adequate">
-                                                            <i class="far fa-star fa-2x"></i>
-                                                        </span>
-                                                        <span class="star" data-value="3" data-bs-toggle="tooltip"
-                                                            data-bs-placement="top" title="Good">
-                                                            <i class="far fa-star fa-2x"></i>
-                                                        </span>
-                                                        <span class="star" data-value="4" data-bs-toggle="tooltip"
-                                                            data-bs-placement="top" title="Very Good">
-                                                            <i class="far fa-star fa-2x"></i>
-                                                        </span>
-                                                        <span class="star" data-value="5" data-bs-toggle="tooltip"
-                                                            data-bs-placement="top" title="Excellent">
-                                                            <i class="far fa-star fa-2x"></i>
-                                                        </span>
-                                                    </div>
-                                                    <div class="rating-text text-center mt-3">
-                                                        <small class="text-muted">Click on a star to select your
-                                                            rating</small>
-                                                    </div>
-                                                </div>
-                                                @error('hec_rating')
-                                                    <div class="text-danger text-center mt-2">{{ $message }}</div>
-                                                @enderror
-                                            </div>
-                                        </div>
 
                                         <div class="mb-4">
                                             <label for="hec_comments" class="form-label">
@@ -1026,7 +961,7 @@
 
                     @if ($canLineManagerApprove)
                         <!-- Line Manager Approval Section -->
-                        <div class="mb-4">
+                        <div class="mb-4" id="approvalSection">
                             <div class="card border-0">
                                 <div class="card-header bg-white border-bottom">
                                     <h6 class="mb-0 text-dark">
@@ -1063,7 +998,7 @@
                                             <div class="rating-container p-4 bg-light rounded border">
                                                 <div class="star-rating mb-3" data-rating-id="contract_rating">
                                                     <input type="hidden" id="contract_rating" name="contract_rating"
-                                                        value="" required>
+                                                        value="{{ old('contract_rating') }}" required>
                                                     <div class="stars d-flex justify-content-center gap-2">
                                                         <span class="star" data-value="1" data-bs-toggle="tooltip"
                                                             data-bs-placement="top" title="Poor">
@@ -1087,8 +1022,10 @@
                                                         </span>
                                                     </div>
                                                     <div class="rating-text text-center mt-3">
-                                                        <small class="text-muted">Click on a star to select your
-                                                            rating</small>
+                                                        <small class="text-muted">Select 1–5 stars to set your rating.</small>
+                                                    </div>
+                                                    <div class="text-center mt-2">
+                                                        <small class="text-muted">1 Poor • 2 Adequate • 3 Good • 4 Very Good • 5 Excellent</small>
                                                     </div>
                                                 </div>
                                                 @error('contract_rating')
@@ -1152,7 +1089,7 @@
 
                     @if ($canProcurementApprove)
                         <!-- Procurement Officer Processing Section -->
-                        <div class="mb-4">
+                        <div class="mb-4" id="approvalSection">
                             <div class="card border-0">
                                 <div class="card-header bg-white border-bottom">
                                     <h6 class="mb-0 text-dark">
@@ -1164,6 +1101,27 @@
                                         $isRenewal =
                                             $contract->renewal_status === 'pending' ||
                                             $contract->lifecycle_stage === 'renewal';
+
+                                        // Latest Line Manager workflow remark (reuse if available)
+                                        $lmLastRemark = $lmLastRemark ?? null;
+                                        $hecLastRemark = null;
+                                        try {
+                                            $histories = null;
+                                            if (method_exists($contract, 'workflow') && $contract->relationLoaded('workflow') && $contract->workflow && $contract->workflow->relationLoaded('histories')) {
+                                                $histories = $contract->workflow->histories;
+                                            } elseif (method_exists($contract, 'workflows') && $contract->relationLoaded('workflows') && $contract->workflows) {
+                                                $histories = $contract->workflows->flatMap(fn ($wf) => $wf->histories ?? collect());
+                                            }
+                                            if ($histories) {
+                                                if ($lmLastRemark === null) {
+                                                    $lmLastRemark = $histories->where('step_name', 'Line Manager')->sortByDesc('created_at')->first()?->remark;
+                                                }
+                                                $hecLastRemark = $histories->where('step_name', 'HEC Member')->sortByDesc('created_at')->first()?->remark;
+                                            }
+                                        } catch (\Throwable $e) {
+                                            $lmLastRemark = null;
+                                            $hecLastRemark = null;
+                                        }
                                     @endphp
                                     <div class="alert alert-light border">
                                         <i class="fas fa-info-circle me-2"></i>
@@ -1173,11 +1131,29 @@
                                         Active.
                                     </div>
 
+                                    @if (!empty($lmLastRemark))
+                                        <div class="mb-2">
+                                            <strong class="d-block small text-muted">Line Manager:</strong>
+                                            <div class="small text-dark mt-1 p-2 bg-light border rounded">
+                                                {{ $lmLastRemark }}
+                                            </div>
+                                        </div>
+                                    @endif
+
+                                    @if (!empty($hecLastRemark))
+                                        <div class="mb-3">
+                                            <strong class="d-block small text-muted">HEC Member:</strong>
+                                            <div class="small text-dark mt-1 p-2 bg-light border rounded">
+                                                {{ $hecLastRemark }}
+                                            </div>
+                                        </div>
+                                    @endif
+
                                     @if ($contract->line_manager_rating)
                                         <div class="mb-2">
                                             <strong>Line Manager Rating:</strong>
                                             <span
-                                                class="badge bg-secondary ms-2">{{ number_format($contract->line_manager_rating, 1) }}/5</span>
+                                                class="badge bg-secondary ms-2">{{ number_format(min((float) $contract->line_manager_rating, 5), 1) }}/5</span>
                                         </div>
                                     @endif
 
@@ -1185,7 +1161,7 @@
                                         <div class="mb-3">
                                             <strong>HEC Rating:</strong>
                                             <span
-                                                class="badge bg-secondary ms-2">{{ number_format($contract->hec_rating, 1) }}/5</span>
+                                                class="badge bg-secondary ms-2">{{ number_format(min((float) $contract->hec_rating, 5), 1) }}/5</span>
                                         </div>
                                     @endif
 
@@ -1193,7 +1169,7 @@
                                         <div class="mb-3">
                                             <strong>Overall Evaluation Score:</strong>
                                             <span
-                                                class="badge bg-secondary ms-2">{{ number_format($contract->evaluation_score, 2) }}/5</span>
+                                                class="badge bg-secondary ms-2">{{ number_format(min((float) $contract->evaluation_score, 5), 2) }}/5</span>
                                         </div>
                                     @endif
 
@@ -1201,8 +1177,24 @@
                                         method="POST" id="procurementApprovalForm" enctype="multipart/form-data">
                                         @csrf
 
+                                        @php
+                                            $procIsRenewal = $contract->renewal_status === 'pending' || $contract->lifecycle_stage === 'renewal';
+                                            $suggestedStart = $contract->end_date ? \Carbon\Carbon::parse($contract->end_date)->addDay()->format('Y-m-d') : '';
+                                            $suggestedEnd   = $contract->end_date && $contract->duration_months
+                                                ? \Carbon\Carbon::parse($contract->end_date)->addMonths($contract->duration_months)->format('Y-m-d')
+                                                : ($contract->end_date ? \Carbon\Carbon::parse($contract->end_date)->addYear()->format('Y-m-d') : '');
+                                        @endphp
+
+                                        @if ($procIsRenewal)
+                                        <div class="alert alert-info py-2 px-3 mb-3 small">
+                                            <i class="fas fa-info-circle me-1"></i>
+                                            Enter the <strong>new contract details</strong> for this renewal. Start date is pre-set to the day after the previous contract ends.
+                                        </div>
+                                        @endif
+
                                         <h6 class="text-dark border-bottom pb-2 mb-3">
-                                            <i class="fas fa-edit me-2"></i>Update Contract Details
+                                            <i class="fas fa-{{ $procIsRenewal ? 'redo' : 'edit' }} me-2"></i>
+                                            {{ $procIsRenewal ? 'New Contract Details (Renewal)' : 'Finalize Contract Details' }}
                                         </h6>
 
                                         <div class="row">
@@ -1212,7 +1204,7 @@
                                                 </label>
                                                 <input type="date" class="form-control" id="procurement_start_date"
                                                     name="start_date"
-                                                    value="{{ old('start_date', $contract->start_date ? \Carbon\Carbon::parse($contract->start_date)->format('Y-m-d') : '') }}">
+                                                    value="{{ old('start_date', $procIsRenewal ? $suggestedStart : ($contract->start_date ? \Carbon\Carbon::parse($contract->start_date)->format('Y-m-d') : '')) }}">
                                                 @error('start_date')
                                                     <div class="text-danger">{{ $message }}</div>
                                                 @enderror
@@ -1224,20 +1216,25 @@
                                                 </label>
                                                 <input type="date" class="form-control" id="procurement_end_date"
                                                     name="end_date"
-                                                    value="{{ old('end_date', $contract->end_date ? \Carbon\Carbon::parse($contract->end_date)->format('Y-m-d') : '') }}">
+                                                    value="{{ old('end_date', $procIsRenewal ? $suggestedEnd : ($contract->end_date ? \Carbon\Carbon::parse($contract->end_date)->format('Y-m-d') : '')) }}">
                                                 @error('end_date')
                                                     <div class="text-danger">{{ $message }}</div>
                                                 @enderror
                                             </div>
 
                                             <div class="col-md-6 mb-3">
-                                                <label for="procurement_duration_months" class="form-label">
+                                                <label for="procurement_duration_months" class="form-label d-flex justify-content-between align-items-center">
                                                     <strong>Duration (Months)</strong>
+                                                    <span id="durationAutoLabel" class="badge bg-light text-success border border-success" style="font-size:.7rem;cursor:pointer" onclick="resetDurationAuto()" title="Click to recalculate from dates">&#8635; Auto</span>
                                                 </label>
-                                                <input type="number" class="form-control"
-                                                    id="procurement_duration_months" name="duration_months"
-                                                    min="1"
-                                                    value="{{ old('duration_months', $contract->duration_months ?? '') }}">
+                                                <div class="input-group">
+                                                    <input type="number" class="form-control"
+                                                        id="procurement_duration_months" name="duration_months"
+                                                        min="1"
+                                                        value="{{ old('duration_months', $procIsRenewal ? ($contract->duration_months ?? '') : ($contract->duration_months ?? '')) }}">
+                                                    <span class="input-group-text text-muted small" id="durationHint" style="font-size:.8rem;">months</span>
+                                                </div>
+                                                <div id="durationPreview" class="text-muted mt-1" style="font-size:.78rem;"></div>
                                                 @error('duration_months')
                                                     <div class="text-danger">{{ $message }}</div>
                                                 @enderror
@@ -1249,7 +1246,8 @@
                                                 </label>
                                                 <input type="number" class="form-control" id="procurement_cost"
                                                     name="cost" step="0.01" min="0"
-                                                    value="{{ old('cost', $contract->cost ?? '') }}">
+                                                    placeholder="{{ $procIsRenewal ? 'Enter new contract cost' : '' }}"
+                                                    value="{{ old('cost', $procIsRenewal ? '' : ($contract->cost ?? '')) }}">
                                                 @error('cost')
                                                     <div class="text-danger">{{ $message }}</div>
                                                 @enderror
@@ -1302,7 +1300,8 @@
                                                 </label>
                                                 <input type="text" class="form-control"
                                                     id="procurement_contract_number" name="contract_number"
-                                                    value="{{ old('contract_number', $contract->contract_number ?? '') }}">
+                                                    placeholder="{{ $procIsRenewal ? 'New contract number (auto-generated if blank)' : '' }}"
+                                                    value="{{ old('contract_number', $procIsRenewal ? '' : ($contract->contract_number ?? '')) }}">
                                                 @error('contract_number')
                                                     <div class="text-danger">{{ $message }}</div>
                                                 @enderror
@@ -1386,46 +1385,255 @@
                             </div>
                         </div>
                     @endif
-                </div>
-            </div>
-        </div>
-    </div>
-    </div>
-    </div>
+                    {{-- Contract Chain / History Section --}}
+                    @if (($contractChain ?? collect())->count() > 1 || $contract->parent_contract_id)
+                    <div class="card shadow-sm border-0 mb-4">
+                        <div class="card-header bg-white border-bottom d-flex align-items-center gap-2">
+                            <i class="fas fa-history text-primary"></i>
+                            <h6 class="mb-0 fw-semibold text-dark">Contract History</h6>
+                            <span class="badge bg-primary ms-1">{{ ($contractChain ?? collect())->count() }} version{{ ($contractChain ?? collect())->count() > 1 ? 's' : '' }}</span>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-hover align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th style="width:90px">Version</th>
+                                            <th>Title</th>
+                                            <th>Contract No.</th>
+                                            <th>Start Date</th>
+                                            <th>End Date</th>
+                                            <th>Duration</th>
+                                            <th>Cost</th>
+                                            <th>Status</th>
+                                            <th></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach ($contractChain ?? collect() as $chainContract)
+                                        @php
+                                            $isCurrent  = $chainContract->id === $contract->id;
+                                            $isActive   = ($chainContract->status ?? '') === 'active';
+                                            $cSt = $chainContract->status ?? 'draft';
+                                            $cStColor = ['active'=>'success','expired'=>'danger','soonToExpire'=>'warning','draft'=>'secondary','in_progress'=>'info','terminated'=>'dark','renewed'=>'primary'][$cSt] ?? 'secondary';
+                                            $cLabel = $cSt === 'soonToExpire' ? 'Soon to Expire' : ucfirst(str_replace('_',' ',$cSt));
+                                        @endphp
+                                        <tr class="{{ $isActive ? 'table-success' : ($isCurrent ? 'table-light' : '') }}">
+                                            <td class="text-nowrap">
+                                                @if (!$chainContract->parent_contract_id)
+                                                    <span class="badge bg-dark">Original</span>
+                                                @else
+                                                    <span class="badge bg-secondary">Term {{ $chainContract->renewal_term_number }}</span>
+                                                @endif
+                                                @if ($isActive)
+                                                    <span class="badge bg-success ms-1" style="font-size:.65rem">● Active</span>
+                                                @endif
+                                                @if ($isCurrent && !$isActive)
+                                                    <span class="badge bg-light text-muted border ms-1" style="font-size:.65rem">Viewing</span>
+                                                @endif
+                                            </td>
+                                            <td class="small fw-semibold">{{ Str::limit($chainContract->title, 35) }}</td>
+                                            <td class="small text-muted">{{ $chainContract->contract_number ?? '—' }}</td>
+                                            <td class="small">{{ $chainContract->start_date ? \Carbon\Carbon::parse($chainContract->start_date)->format('d M Y') : '—' }}</td>
+                                            <td class="small">{{ $chainContract->end_date ? \Carbon\Carbon::parse($chainContract->end_date)->format('d M Y') : '—' }}</td>
+                                            <td class="small text-muted">{{ $chainContract->duration_months ? $chainContract->duration_months.' mo' : '—' }}</td>
+                                            <td class="small">
+                                                @if ($chainContract->cost)
+                                                    {{ number_format($chainContract->cost, 0) }}
+                                                    <span class="text-muted">{{ $chainContract->currency ?? 'TZS' }}</span>
+                                                @else
+                                                    —
+                                                @endif
+                                            </td>
+                                            <td><span class="badge bg-{{ $cStColor }}">{{ $cLabel }}</span></td>
+                                            <td>
+                                                @if (!$isCurrent)
+                                                    <a href="{{ route('procurements.contracts.show', $chainContract->id) }}" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem;">
+                                                        <i class="fas fa-eye me-1"></i>View
+                                                    </a>
+                                                @else
+                                                    <span class="text-muted small">Viewing</span>
+                                                @endif
+                                            </td>
+                                        </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    @endif
+
+                </div>{{-- /col-lg-8 main content --}}
+
+                <!-- Quick Actions Sidebar (right) -->
+                <div class="col-lg-4 order-lg-2 mb-4">
+                    <div class="card shadow-sm border-0 sticky-top" style="top:80px">
+                        <div class="card-header bg-white border-bottom">
+                            <h6 class="mb-0 text-dark fw-semibold">
+                                <i class="fas fa-bolt me-2"></i>Quick Actions
+                            </h6>
+                        </div>
+                        <div class="card-body">
+                            @php
+                                $sbUser      = auth()->user();
+                                $sbStatus    = $contract->status ?? 'draft';
+                                $sbStage     = $contract->approval_stage ?? '';
+                                $sbApprover  = $contract->current_approver_id == $sbUser->id;
+                                $canEditSb   = $sbUser->hasAnyRole(['procurement-officer','hr','super-admin']);
+                                $isLmSb      = $sbUser->hasRole('line-manager');
+                                $isProcSb    = $sbUser->hasRole('procurement-officer');
+                                $isHecSb     = $sbUser->hasAnyRole(['coo','cfo','cms','ccdro']);
+
+                                // Can take approval action (current approver, not terminated/rejected)
+                                // HEC members use the inline form — no Quick Action buttons needed
+                                $canActSb = $sbApprover
+                                    && in_array($sbStage, ['line_manager','procurement'])
+                                    && !in_array($sbStatus, ['terminated','rejected']);
+
+                                // Can initiate renewal (active/expiring, line manager of dept OR procurement officer)
+                                $canRenewSb = in_array($sbStatus, ['active','soonToExpire','expired'])
+                                    && $contract->renewal_status !== 'pending'
+                                    && ($isProcSb || ($isLmSb && $sbUser->deptId == ($contract->department->id ?? null)));
+
+                                // Can file (procurement officer, contract expired, not archived)
+                                $canFileSb = $isProcSb
+                                    && $sbStatus === 'expired'
+                                    && !in_array($sbStatus, ['archived','terminated']);
+
+                                // Can send reminder (procurement officer, active/expiring)
+                                $canRemindSb = $isProcSb
+                                    && in_array($sbStatus, ['active','soonToExpire']);
+                            @endphp
+                            <div class="d-grid gap-2">
+                                {{-- Approval actions (for current approver) --}}
+                                @if ($canActSb)
+                                    <a href="#approvalSection" class="btn btn-success btn-sm"
+                                        onclick="document.getElementById('approvalSection')?.scrollIntoView({behavior:'smooth'});return false;">
+                                        <i class="fas fa-check-circle me-1"></i>
+                                        @if ($sbStage === 'line_manager') Review & Approve
+                                        @elseif ($sbStage === 'hec') Rate & Approve
+                                        @else Finalize Contract
+                                        @endif
+                                    </a>
+                                    <button type="button" class="btn btn-outline-danger btn-sm"
+                                        data-bs-toggle="modal" data-bs-target="#rejectContractModal">
+                                        <i class="fas fa-times-circle me-1"></i> Reject
+                                    </button>
+                                    <hr class="my-1">
+                                @endif
+
+                                {{-- Renewal --}}
+                                @if ($canRenewSb)
+                                    <button type="button" class="btn btn-primary btn-sm"
+                                        data-bs-toggle="modal" data-bs-target="#renewalModal">
+                                        <i class="fas fa-redo me-1"></i> Initiate Renewal
+                                    </button>
+                                @endif
+
+                                {{-- File (archive) expired contract --}}
+                                @if ($canFileSb)
+                                    <form action="{{ route('procurements.contracts.file', $contract->id) }}" method="POST"
+                                        onsubmit="return confirm('File this contract as archived?');">
+                                        @csrf
+                                        <button type="submit" class="btn btn-outline-secondary btn-sm w-100">
+                                            <i class="fas fa-archive me-1"></i> File / Archive
+                                        </button>
+                                    </form>
+                                @endif
+
+                                {{-- Send Reminder --}}
+                                @if ($canRemindSb)
+                                    <form action="{{ route('procurements.contracts.send-reminder', $contract->id) }}" method="POST">
+                                        @csrf
+                                        <button type="submit" class="btn btn-outline-warning btn-sm w-100 text-dark">
+                                            <i class="fas fa-bell me-1"></i> Send Reminder
+                                        </button>
+                                    </form>
+                                @endif
+
+                                <hr class="my-1">
+
+                                <a href="{{ route('procurements.contracts.index') }}" class="btn btn-outline-secondary btn-sm">
+                                    <i class="fas fa-arrow-left me-1"></i> Back to List
+                                </a>
+                                @if ($canEditSb)
+                                    <a href="{{ route('procurements.contracts.edit', $contract->id) }}" class="btn btn-outline-success btn-sm">
+                                        <i class="fas fa-edit me-1"></i> Edit Contract
+                                    </a>
+                                @endif
+                                @if ($contract->signed_contract_path)
+                                    <a href="{{ route('procurements.contracts.document', $contract->id) }}?type=signed_contract_path"
+                                        target="_blank" class="btn btn-outline-secondary btn-sm">
+                                        <i class="fas fa-file-signature me-1"></i> Signed Contract
+                                    </a>
+                                @endif
+                                @if ($sbUser->hasRole('super-admin'))
+                                    <hr class="my-1">
+                                    <form action="{{ route('procurements.contracts.destroy', $contract->id) }}"
+                                        method="POST"
+                                        onsubmit="return confirm('Delete this contract? This cannot be undone.');">
+                                        @csrf
+                                        @method('DELETE')
+                                        <button type="submit" class="btn btn-outline-danger btn-sm w-100">
+                                            <i class="fas fa-trash me-1"></i> Delete Contract
+                                        </button>
+                                    </form>
+                                @endif
+                            </div>
+                        </div>
+
+                        {{-- Contract meta info --}}
+                        <div class="card-footer bg-light border-top px-3 py-3">
+                            <div class="small text-muted mb-2 fw-semibold text-uppercase" style="font-size:0.7rem;letter-spacing:.05em">Contract Info</div>
+                            <div class="d-flex flex-column gap-2">
+                                @if ($contract->contract_type)
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-muted small"><i class="fas fa-tag me-1"></i>Type</span>
+                                    <span class="badge bg-secondary">{{ $contract->contract_type }}</span>
+                                </div>
+                                @endif
+                                @if ($contract->lifecycle_stage)
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-muted small"><i class="fas fa-layer-group me-1"></i>Stage</span>
+                                    <span class="text-dark small fw-semibold">{{ ucfirst($contract->lifecycle_stage) }}</span>
+                                </div>
+                                @endif
+                                @if ($contract->duration_months)
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-muted small"><i class="fas fa-clock me-1"></i>Duration</span>
+                                    <span class="text-dark small fw-semibold">{{ $contract->duration_months }} months</span>
+                                </div>
+                                @endif
+                                @if ($contract->parent_contract_id && $contract->parentContract)
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-muted small"><i class="fas fa-link me-1"></i>First Contract</span>
+                                    <a href="{{ route('procurements.contracts.show', $contract->parent_contract_id) }}" class="small text-decoration-none">View</a>
+                                </div>
+                                @endif
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-muted small"><i class="fas fa-calendar-plus me-1"></i>Created</span>
+                                    <span class="text-dark small">{{ $contract->created_at?->format('d M Y') }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>{{-- /col-lg-4 sidebar --}}
+
+            </div>{{-- /row --}}
+        </div>{{-- /content --}}
+    </div>{{-- /page-wrapper --}}
 
     @push('styles')
         <style>
-            /* Green icons styling */
-            .fas,
-            .fa,
-            i[class*="fa-"] {
-                color: #28a745 !important;
+            /* Green accent for section-card header icons only */
+            .section-card .card-header .fas,
+            .section-card .card-header .fa {
+                color: #198754;
             }
-
-            /* Override for specific cases where we want different colors */
-            .badge .fas,
-            .badge .fa {
-                color: inherit !important;
-            }
-
-            .btn .fas,
-            .btn .fa {
-                color: inherit !important;
-            }
-
-            .text-warning .fas,
-            .text-warning .fa {
-                color: #ffc107 !important;
-            }
-
-            .text-danger .fas,
-            .text-danger .fa {
-                color: #dc3545 !important;
-            }
-
-            .text-success .fas,
-            .text-success .fa {
-                color: #28a745 !important;
+            .info-item .fas,
+            .info-item .fa {
+                color: #198754;
             }
 
             /* Star Rating Styles */
@@ -1594,9 +1802,9 @@
                         1: 'Poor',
                         2: 'Adequate',
                         3: 'Good',
-                        4: 'Very Good',
-                        5: 'Excellent'
+                        4: 'Excellent'
                     };
+                    const maxValue = stars.length;
 
                     // Initialize Bootstrap tooltips
                     stars.forEach(function(star) {
@@ -1612,7 +1820,7 @@
                             updateStars(stars, value);
                             if (ratingText) {
                                 ratingText.innerHTML =
-                                    `<small class="text-muted">Selected: ${value} - ${ratingLabels[value]}</small>`;
+                                    `<small class="text-muted">Selected: ${value}/${maxValue} - ${ratingLabels[value] ?? ''}</small>`;
                             }
                             // Hide tooltips after selection
                             stars.forEach(function(s) {
@@ -1633,6 +1841,16 @@
                         const currentValue = parseInt(hiddenInput.value) || 0;
                         updateStars(stars, currentValue);
                     });
+
+                    // Initialize from old() value (after validation errors)
+                    const initialValue = parseInt(hiddenInput.value) || 0;
+                    if (initialValue > 0) {
+                        updateStars(stars, initialValue);
+                        if (ratingText) {
+                            ratingText.innerHTML =
+                                `<small class="text-muted">Selected: ${initialValue}/${maxValue} - ${ratingLabels[initialValue] ?? ''}</small>`;
+                        }
+                    }
                 }
 
                 function updateStars(stars, value) {
@@ -1661,18 +1879,6 @@
                     });
                 }
 
-                // Form validation for HEC approval
-                const hecApprovalForm = document.getElementById('hecApprovalForm');
-                if (hecApprovalForm) {
-                    hecApprovalForm.addEventListener('submit', function(e) {
-                        const ratingInput = document.getElementById('hec_rating');
-                        if (!ratingInput || !ratingInput.value) {
-                            e.preventDefault();
-                            alert('Please select a contract rating before submitting.');
-                            return false;
-                        }
-                    });
-                }
 
                 // Form validation for Line Manager approval
                 const lineManagerApprovalForm = document.getElementById('lineManagerApprovalForm');
@@ -1694,43 +1900,156 @@
                 }
 
                 // Auto-calculate duration_months when start_date or end_date changes in Procurement form
-                const procurementStartDate = document.getElementById('procurement_start_date');
-                const procurementEndDate = document.getElementById('procurement_end_date');
+                const procurementStartDate   = document.getElementById('procurement_start_date');
+                const procurementEndDate     = document.getElementById('procurement_end_date');
                 const procurementDurationMonths = document.getElementById('procurement_duration_months');
+                const durationPreview        = document.getElementById('durationPreview');
 
-                if (procurementStartDate && procurementEndDate && procurementDurationMonths) {
-                    function calculateDuration() {
-                        const startDate = procurementStartDate.value;
-                        const endDate = procurementEndDate.value;
+                function calcMonths(start, end) {
+                    let y = end.getFullYear() - start.getFullYear();
+                    let m = end.getMonth() - start.getMonth();
+                    let total = y * 12 + m;
+                    if (end.getDate() < start.getDate()) total--; // partial month
+                    return Math.max(total, 0);
+                }
 
-                        if (startDate && endDate) {
-                            const start = new Date(startDate);
-                            const end = new Date(endDate);
+                function updateDurationPreview(total) {
+                    if (!durationPreview) return;
+                    if (total <= 0) { durationPreview.textContent = ''; return; }
+                    const yrs = Math.floor(total / 12);
+                    const mos = total % 12;
+                    let txt = '';
+                    if (yrs) txt += yrs + ' year' + (yrs > 1 ? 's' : '');
+                    if (mos) txt += (txt ? ' ' : '') + mos + ' month' + (mos > 1 ? 's' : '');
+                    durationPreview.textContent = '≈ ' + txt;
+                }
 
-                            if (end >= start) {
-                                // Calculate difference in months
-                                const years = end.getFullYear() - start.getFullYear();
-                                const months = end.getMonth() - start.getMonth();
-                                const totalMonths = years * 12 + months;
-
-                                // If duration is empty or user hasn't manually changed it, auto-calculate
-                                if (!procurementDurationMonths.dataset.manual || procurementDurationMonths.dataset
-                                    .manual === 'false') {
-                                    procurementDurationMonths.value = totalMonths > 0 ? totalMonths : '';
-                                }
-                            }
+                function calculateDuration() {
+                    if (!procurementStartDate || !procurementEndDate || !procurementDurationMonths) return;
+                    const sv = procurementStartDate.value;
+                    const ev = procurementEndDate.value;
+                    if (sv && ev) {
+                        const start = new Date(sv);
+                        const end   = new Date(ev);
+                        if (end > start) {
+                            const total = calcMonths(start, end);
+                            procurementDurationMonths.value = total || '';
+                            updateDurationPreview(total);
+                        } else {
+                            procurementDurationMonths.value = '';
+                            if (durationPreview) durationPreview.textContent = 'End date must be after start date';
                         }
                     }
+                }
 
+                function resetDurationAuto() {
+                    if (procurementDurationMonths) {
+                        procurementDurationMonths.dataset.manual = 'false';
+                        calculateDuration();
+                    }
+                }
+
+                if (procurementStartDate && procurementEndDate) {
                     procurementStartDate.addEventListener('change', calculateDuration);
                     procurementEndDate.addEventListener('change', calculateDuration);
-
-                    // Track manual changes to duration
-                    procurementDurationMonths.addEventListener('input', function() {
-                        this.dataset.manual = 'true';
-                    });
+                    // Run on load to show preview for existing dates
+                    calculateDuration();
                 }
             });
         </script>
     @endpush
+
+    {{-- Renewal Modal --}}
+    @if ($canRenewSb ?? false)
+    <div class="modal fade" id="renewalModal" tabindex="-1" aria-labelledby="renewalModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="renewalModalLabel">
+                        <i class="fas fa-redo me-2"></i>Initiate Contract Renewal
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form action="{{ route('procurements.contracts.renewal.initiate', $contract->id) }}" method="POST">
+                    @csrf
+                    <div class="modal-body">
+                        @php $renewIsProcSb = auth()->user()->hasRole('procurement-officer'); @endphp
+
+                        @if ($renewIsProcSb)
+                            {{-- Procurement officer: set new dates --}}
+                            <div class="alert alert-info small mb-3">
+                                <i class="fas fa-info-circle me-1"></i>
+                                Set the new contract period and submit. The renewal workflow will start with the Line Manager.
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">New Start Date <span class="text-danger">*</span></label>
+                                <input type="date" name="new_start_date" class="form-control"
+                                    value="{{ $contract->end_date ? \Carbon\Carbon::parse($contract->end_date)->addDay()->format('Y-m-d') : '' }}" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">New End Date <span class="text-danger">*</span></label>
+                                <input type="date" name="new_end_date" class="form-control"
+                                    value="{{ $contract->end_date ? \Carbon\Carbon::parse($contract->end_date)->addYear()->format('Y-m-d') : '' }}" required>
+                            </div>
+                        @else
+                            {{-- Line manager / HEC: just rate and add notes --}}
+                            <div class="alert alert-info small mb-3">
+                                <i class="fas fa-info-circle me-1"></i>
+                                Rate this contract and add any notes. It will be forwarded to HEC for approval.
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">Contract Rating <span class="text-danger">*</span></label>
+                                <div class="d-flex gap-2 align-items-center mt-1">
+                                    @for ($i = 1; $i <= 5; $i++)
+                                        <label class="d-flex align-items-center gap-1 mb-0" style="cursor:pointer">
+                                            <input type="radio" name="contract_rating" value="{{ $i }}" required style="display:none">
+                                            <i class="far fa-star fa-lg renewal-star" data-val="{{ $i }}" style="color:#ccc;cursor:pointer"></i>
+                                        </label>
+                                    @endfor
+                                    <span class="small text-muted ms-2 renewal-rating-label">Select rating</span>
+                                </div>
+                                <input type="hidden" name="contract_rating" id="renewalRatingInput">
+                            </div>
+                        @endif
+
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Notes <small class="text-muted fw-normal">(Optional)</small></label>
+                            <textarea name="renewal_notes" class="form-control" rows="3"
+                                placeholder="Add any comments or reason for renewal..."></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary btn-sm">
+                            <i class="fas fa-redo me-1"></i>
+                            {{ $renewIsProcSb ?? false ? 'Initiate Renewal' : 'Rate & Forward to HEC' }}
+                        </button>
+                    </div>
+                </form>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function () {
+                        const stars = document.querySelectorAll('.renewal-star');
+                        const ratingInput = document.getElementById('renewalRatingInput');
+                        const label = document.querySelector('.renewal-rating-label');
+                        const labels = ['','Poor','Adequate','Good','Very Good','Excellent'];
+                        stars.forEach(function(star) {
+                            star.addEventListener('click', function() {
+                                const val = parseInt(this.dataset.val);
+                                if (ratingInput) ratingInput.value = val;
+                                if (label) label.textContent = labels[val] || '';
+                                stars.forEach(function(s) {
+                                    s.className = parseInt(s.dataset.val) <= val
+                                        ? 'fas fa-star fa-lg renewal-star'
+                                        : 'far fa-star fa-lg renewal-star';
+                                    s.style.color = parseInt(s.dataset.val) <= val ? '#ffc107' : '#ccc';
+                                });
+                            });
+                        });
+                    });
+                </script>
+            </div>
+        </div>
+    </div>
+    @endif
+
 @endsection

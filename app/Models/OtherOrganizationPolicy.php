@@ -20,16 +20,29 @@ class OtherOrganizationPolicy extends Model
         'content_type',
         'pdf_path',
         'division_id',
+        'policy_category_id',
         'is_global',
         'status',
+        'effective_date',
+        'next_review_date',
         'view_count',
         'created_by',
         'updated_by',
     ];
 
     protected $casts = [
-        'is_global' => 'boolean',
+        'is_global'        => 'boolean',
+        'effective_date'   => 'date',
+        'next_review_date' => 'date',
     ];
+
+    /**
+     * Relationship: Policy belongs to a Category
+     */
+    public function category()
+    {
+        return $this->belongsTo(PolicyCategory::class, 'policy_category_id');
+    }
 
     /**
      * Relationship: Policy belongs to a Division/Entity (legacy single division)
@@ -91,6 +104,14 @@ class OtherOrganizationPolicy extends Model
     }
 
     /**
+     * Check if Policy is draft
+     */
+    public function isDraft(): bool
+    {
+        return $this->status === 'draft';
+    }
+
+    /**
      * Check if Policy is global (for all users)
      */
     public function isGlobal(): bool
@@ -112,6 +133,14 @@ class OtherOrganizationPolicy extends Model
     public function scopeArchived($query)
     {
         return $query->where('status', 'archived');
+    }
+
+    /**
+     * Scope: Draft policies only
+     */
+    public function scopeDraft($query)
+    {
+        return $query->where('status', 'draft');
     }
 
     /**

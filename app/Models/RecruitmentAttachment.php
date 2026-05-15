@@ -31,7 +31,7 @@ class RecruitmentAttachment extends Model
      */
     public function requisition(): BelongsTo
     {
-        return $this->belongsTo(RecruitmentRequisition::class, 'requisition_id');
+        return $this->belongsTo(Requisition::class, 'requisition_id');
     }
 
     /**
@@ -59,10 +59,3 @@ class RecruitmentAttachment extends Model
         }
     }
 }
-
-
-
-
-
-
-

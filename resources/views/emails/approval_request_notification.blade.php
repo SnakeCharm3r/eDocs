@@ -88,8 +88,9 @@
         }
 
         .info-row {
-            display: flex;
-            justify-content: space-between;
+            display: table;
+            width: 100%;
+            table-layout: fixed;
             padding: 10px 0;
             border-bottom: 1px solid #e9ecef;
         }
@@ -101,13 +102,17 @@
         .info-label {
             font-weight: 600;
             color: #555;
-            flex: 1;
+            display: table-cell;
+            width: 40%;
+            vertical-align: top;
         }
 
         .info-value {
             color: #333;
-            flex: 1;
+            display: table-cell;
+            width: 60%;
             text-align: right;
+            vertical-align: top;
             font-weight: 500;
         }
 
@@ -203,12 +208,14 @@
             }
 
             .info-row {
-                flex-direction: column;
+                display: block;
             }
 
             .info-value {
+                display: block;
+                width: 100%;
                 text-align: left;
-                margin-top: 5px;
+                margin-top: 4px;
             }
 
             .action-button {
@@ -222,10 +229,6 @@
 
 <body>
     <div class="email-wrapper">
-        <div class="header">
-            <h1>💻 ICT Access Request Awaiting Approval</h1>
-        </div>
-
         <div class="content">
             @php
                 $approverName = trim(($approver->fname ?? '') . ' ' . ($approver->lname ?? '')) ?: $approver->username ?? 'Approver';
@@ -236,11 +239,6 @@
 
             <div class="greeting">
                 <p>Dear <strong>{{ $approverName }}</strong>,</p>
-            </div>
-
-            <div class="alert-banner">
-                <strong>🔔 New ICT Access Request Requires Your Review</strong>
-                <span>Please review and take action on this pending request</span>
             </div>
 
             <div class="highlight">
@@ -254,10 +252,6 @@
                 <div class="info-row">
                     <span class="info-label">Submitted by:</span>
                     <span class="info-value">{{ $requesterName }}</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Request Type:</span>
-                    <span class="info-value">{{ $requestType }}</span>
                 </div>
                 <div class="info-row">
                     <span class="info-label">Submission Date:</span>
@@ -277,9 +271,19 @@
                 @endif
             </div>
 
-            <div class="urgency-note">
-                <strong>⏱️ Action Required:</strong> This request is pending your approval. Please review the details and take appropriate action.
+            @if(isset($requestDetails['request_summary']) && !empty($requestDetails['request_summary']))
+            <div class="info-card" style="margin-top: 20px;">
+                <h3>Requested Access Details</h3>
+                <div style="padding: 10px 0;">
+                    @foreach($requestDetails['request_summary'] as $item)
+                        <div style="padding: 8px 0; border-bottom: 1px solid #e9ecef;">
+                            <span style="color: #007A33; font-weight: 600;">✓</span>
+                            <span style="margin-left: 8px; color: #333;">{{ $item }}</span>
+                        </div>
+                    @endforeach
+                </div>
             </div>
+            @endif
 
             <div class="button-container">
                 <a href="{{ route('requestapprove.index') }}" class="action-button" target="_blank">

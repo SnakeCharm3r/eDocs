@@ -18,6 +18,7 @@ class HecContract extends Model
         'description',
         'contract_type',
         'division_id',
+        'vendor_id',
         'file_path',
         'signed_contract_path',
         'terms_conditions_path',
@@ -35,12 +36,17 @@ class HecContract extends Model
         'owner_email',
         'contract_source',
         'created_by',
+        'expired_reminder_sent_at',
+        'parent_contract_id',
+        'renewed_at',
     ];
 
     protected $casts = [
         'start_date' => 'date',
         'end_date' => 'date',
         'cost' => 'decimal:2',
+        'expired_reminder_sent_at' => 'datetime',
+        'renewed_at' => 'datetime',
     ];
 
     /**
@@ -65,5 +71,29 @@ class HecContract extends Model
     public function division(): BelongsTo
     {
         return $this->belongsTo(Division::class);
+    }
+
+    /**
+     * Contract belongs to a Vendor
+     */
+    public function vendor(): BelongsTo
+    {
+        return $this->belongsTo(CcbrtVendor::class);
+    }
+
+    /**
+     * Original contract this was renewed from
+     */
+    public function parentContract(): BelongsTo
+    {
+        return $this->belongsTo(HecContract::class, 'parent_contract_id');
+    }
+
+    /**
+     * Renewal contracts created from this one
+     */
+    public function renewals(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(HecContract::class, 'parent_contract_id');
     }
 }

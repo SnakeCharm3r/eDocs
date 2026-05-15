@@ -12,6 +12,7 @@ class IctAccessResource extends Model
     protected $fillable = [
         'privilegeId',
         'email',
+        'requested_email_address',
         'userId',
         'hmisId',
         'aruti',

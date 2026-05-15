@@ -22,19 +22,43 @@ use Illuminate\Support\Facades\Storage;
 use App\Mail\OnCallRejectionNotification;
 use App\Mail\OnCallSubmissionNotification;
 use Illuminate\Validation\ValidationException;
+use App\Models\OnCallRate;
 
 class OnCallRequestController extends Controller
 {
-    private $onCallRates = [
-        'Specialists Off site' => 40000,
-        'Certificate' => 50000,
-        'Enrolled Certificate' => 60000,
-        'Diploma'     => 80000,
-        'Degree'      => 100000,
-        'Hospital Supervisor' => 140000,
-        'Masters'     => 120000,
-        // 'PhD'         => 200000,
-    ];
+    /**
+     * Get on-call rates that are active during create/edit (active on the reference date).
+     * If user has assigned rates, return only those active on the date; otherwise return all active rates for that date.
+     *
+     * @param Carbon|null $referenceDate Default today — only rates with start_date <= date <= end_date and is_active are returned
+     */
+    private function getOnCallRates(?User $user = null, $referenceDate = null): array
+    {
+        $user = $user ?? Auth::user();
+        $date = $referenceDate instanceof Carbon
+            ? $referenceDate
+            : Carbon::today();
+        $dateStr = $date->format('Y-m-d');
+
+        // If user has assigned rates, use only those active on the reference date
+        if ($user && $user->onCallRates()->count() > 0) {
+            return $user->onCallRates()
+                ->where('is_active', true)
+                ->where('start_date', '<=', $dateStr)
+                ->where('end_date', '>=', $dateStr)
+                ->orderBy('education_level')
+                ->pluck('rate', 'education_level')
+                ->toArray();
+        }
+
+        // Otherwise, return all rates that are active on the reference date (create/edit show only active rates)
+        return OnCallRate::where('is_active', true)
+            ->where('start_date', '<=', $dateStr)
+            ->where('end_date', '>=', $dateStr)
+            ->orderBy('education_level')
+            ->pluck('rate', 'education_level')
+            ->toArray();
+    }
 
     /** ---------- Helpers: role scoping & report base query ---------- */
 
@@ -42,6 +66,12 @@ class OnCallRequestController extends Controller
     {
         // HR: see all departments
         if ($user->hasRole('hr')) {
+            return \App\Models\Departments::pluck('id')->all();
+        }
+
+        // HEC roles (COO/CFO/CMS/CCDRO): see all departments
+        // Checked before line-manager because HEC members may also carry the line-manager role
+        if ($user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
             return \App\Models\Departments::pluck('id')->all();
         }
 
@@ -53,19 +83,6 @@ class OnCallRequestController extends Controller
                 : [];
             $own = $user->deptId ? [(int) $user->deptId] : [];
             return array_values(array_unique(array_filter(array_merge($managed, $own))));
-        }
-
-        // HEC roles (COO/CFO/CMS): see departments mapped to their HEC level
-        if ($user->hasAnyRole(['coo', 'cfo', 'cms'])) {
-            $roleToHec = [];
-            if ($user->hasRole('coo')) $roleToHec[] = 'COO';
-            if ($user->hasRole('cfo')) $roleToHec[] = 'CFO';
-            if ($user->hasRole('cms')) $roleToHec[] = 'CMS';
-
-            return \App\Models\Departments::query()
-                ->join('hecs', 'departments.hec_id', '=', 'hecs.id')
-                ->whereIn(\DB::raw('LOWER(hecs.hec_level_name)'), collect($roleToHec)->map(fn($r) => strtolower($r))->all())
-                ->pluck('departments.id')->all();
         }
 
         // Requester (or in-charge) only: see own requests
@@ -86,7 +103,7 @@ class OnCallRequestController extends Controller
             ->selectRaw(
                 'u.username, u.ccbrt_code, u.fname, u.mname, u.lname, ' .
                     'd.dept_name as department, u.job_title, ' .
-                    'ocr.rate, ocr.total_amount_payable, ' .
+                    'ocr.rate_used as rate, ocr.total_amount_payable, ' .
                     'ocr.locum_month as month, ocr.locum_year as year, ocr.status, ocr.created_at'
             );
 
@@ -136,18 +153,37 @@ class OnCallRequestController extends Controller
                 ->with('error', "Submission for {$defaultClaimMonth} is closed. The deadline was {$deadline->format('j F Y')}.");
         }
 
-        // Only allow previous month in the dropdown
-        $months = [$defaultClaimMonth];
+        // Provide months and year separately (like locum requests)
+        $months = [
+            'January',
+            'February',
+            'March',
+            'April',
+            'May',
+            'June',
+            'July',
+            'August',
+            'September',
+            'October',
+            'November',
+            'December'
+        ];
 
-        $educationLevels = array_keys($this->onCallRates);
-        $onCallRates      = $this->onCallRates;
+        $previousYear = (int)$previous->year;
+        $previousMonth = $previous->format('F');
+
+        // Show only rates that are active during create (active today)
+        $onCallRates = $this->getOnCallRates($user, $today);
+        $educationLevels = array_keys($onCallRates);
 
         return view('oncall_requests.create', compact(
             'user',
             'months',
             'educationLevels',
             'onCallRates',
-            'defaultClaimMonth'
+            'defaultClaimMonth',
+            'previousYear',
+            'previousMonth'
         ));
     }
 
@@ -177,9 +213,11 @@ class OnCallRequestController extends Controller
         }
 
         try {
+            // Validate education_level against rates that are active during create (active today)
             $validated = $request->validate([
-                'education_level'       => ['required', Rule::in(array_keys($this->onCallRates))],
-                'locum_month'           => ['required', 'string', 'regex:/^(January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}$/'],
+                'education_level'       => ['required', Rule::in(array_keys($this->getOnCallRates(Auth::user(), $today)))],
+                'locum_year'            => ['required', 'integer', 'min:2020', 'max:' . (date('Y') + 1)],
+                'locum_month'           => ['required', 'string', Rule::in(['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'])],
                 'worked_days'           => ['required', 'array', 'min:1'],
                 'worked_days.*.worked'  => ['required', 'in:0,1'],
                 'worked_days.*.hours'   => ['required_if:worked_days.*.worked,1', 'numeric', 'min:0', 'max:24'],
@@ -190,6 +228,21 @@ class OnCallRequestController extends Controller
             ], [
                 'special_task_document.required_if' => 'Please upload the supportive document for a special task.',
             ]);
+
+            // Prevent future month claims
+            $selectedYear = (int)$validated['locum_year'];
+            $selectedMonth = $validated['locum_month'];
+            $monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+            $selectedMonthIndex = array_search($selectedMonth, $monthNames);
+
+            $now = Carbon::now();
+            $currentYear = (int)$now->year;
+            $currentMonth = (int)$now->month - 1; // 0-11
+
+            if ($selectedYear > $currentYear || ($selectedYear === $currentYear && $selectedMonthIndex > $currentMonth)) {
+                return back()->withErrors(['locum_month' => 'You cannot claim for future months.'])->withInput();
+            }
+
             $totalDays = 0;
             $totalHours = 0;
 
@@ -208,12 +261,15 @@ class OnCallRequestController extends Controller
                 return back()->withErrors(['worked_days' => 'At least one day must be selected'])->withInput();
             }
 
-            $rate        = $this->onCallRates[$validated['education_level']];
+            $month = $validated['locum_month'];
+            $year = (int)$validated['locum_year'];
+
+            // Use rates that are active during create (active today)
+            $onCallRates = $this->getOnCallRates(Auth::user(), $today);
+            $rate        = $onCallRates[$validated['education_level']] ?? 0;
             $totalAmount = $totalDays * $rate;
 
             DB::beginTransaction();
-
-            [$month, $year] = explode(' ', $validated['locum_month']);
 
             // If a request for this user+month+year already exists...
             $existing = OnCallRequest::where('user_id', Auth::id())
@@ -269,6 +325,7 @@ class OnCallRequestController extends Controller
                 'total_hours'           => $totalHours,
                 'total_amount'          => $totalAmount,
                 'total_amount_payable'  => $totalAmount,
+                'rate_used'             => $rate, // Store the rate used at creation time
                 'worked_days'           => $validated['worked_days'],
                 // 'reason'                => $validated['reason'],
                 'description'          => $validated['description'] ?? null,
@@ -282,16 +339,8 @@ class OnCallRequestController extends Controller
 
             $user = Auth::user();
 
-            //current & future months
-            $tz = config('app.timezone', 'Africa/Dar_es_Salaam');
-            $claimedMonth = \Carbon\Carbon::createFromFormat('F Y', $validated['locum_month'], $tz)->startOfMonth();
-            $currentMonth = \Carbon\Carbon::now($tz)->startOfMonth();
-
-            if ($claimedMonth->greaterThanOrEqualTo($currentMonth)) {
-                return back()->withErrors([
-                    'locum_month' => 'You cannot submit or claim for the current or a future month. Please select a past month.'
-                ])->withInput();
-            }
+            //current & future months validation (already checked earlier, but keeping for consistency)
+            // This validation was already done above, so we can skip it here or just remove it
 
             $user = Auth::user();
             $isLineManagerRequester = $user->hasRole('line-manager') && !$user->hasRole('hr');
@@ -402,10 +451,16 @@ class OnCallRequestController extends Controller
 
             return redirect()->route('oncall_requests.index')->with('success', 'On-call request submitted for approval.');
         } catch (ValidationException $e) {
+            DB::rollBack();
             return back()->withErrors($e->errors())->withInput();
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to submit on-call request', ['err' => $e->getMessage()]);
+            Log::error('Failed to submit on-call request', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine()
+            ]);
             return back()->with('error', 'Failed to submit request. Please try again.')->withInput();
         }
     }
@@ -521,21 +576,106 @@ class OnCallRequestController extends Controller
         // Check if user is an approver (line-manager, hr, coo, cfo, cms)
         $isApprover = $user->hasAnyRole(['line-manager', 'hr', 'coo', 'cfo', 'cms']);
 
-        if ($isApprover) {
-            // Approvers: Get pending requests assigned to them for approval
-            $requests = OnCallRequest::with([
-                'user.department',
-                'workflow.histories' => fn($q) => $q->with(['attendedBy', 'forwardedBy', 'approver'])->orderBy('id', 'desc'),
-            ])
-                ->where('status', 'pending')
-                ->whereHas('workflow', function ($q) {
-                    $q->where('work_flow_completed', 0)
-                        ->whereHas('histories', fn($h) => $h->where('attended_by', Auth::id())->where('status', 0));
-                })
-                ->orderBy('created_at', 'desc')
-                ->get();
+        // Get filter parameter (pending or approved)
+        $filter = $request->query('filter', 'pending');
 
-            return view('oncall_requests.view', compact('requests'));
+        if ($isApprover) {
+            if ($filter === 'approved') {
+                // Approvers: Get approved requests based on department visibility
+                $isHR = $user->hasRole('hr');
+                $isHECMember = $user->hasAnyRole(['coo', 'cfo', 'cms']);
+                $scope = $this->allowedDepartmentIds($user);
+
+                $requests = OnCallRequest::with([
+                    'user.department',
+                    'workflow.histories' => fn($q) => $q->with(['attendedBy', 'forwardedBy', 'approver'])->orderBy('id', 'desc'),
+                ]);
+
+                // For HEC members: Show requests they've approved (even if still pending) + fully approved
+                // For other approvers: Only show fully approved requests
+                if ($isHECMember) {
+                    $requests->where(function ($q) use ($user) {
+                        // Fully approved requests (workflow completed)
+                        $q->whereHas('workflow', function ($wfQuery) {
+                            $wfQuery->where('work_flow_completed', 1)
+                                ->where('work_flow_status', 1); // Approved status
+                        })
+                        // OR request status is approved (fallback)
+                        ->orWhere('status', 'approved')
+                        // OR requests approved by this HEC member (even if still pending further approval)
+                        ->orWhereHas('workflow.histories', function ($h) use ($user) {
+                            $h->where('attended_by', $user->id)
+                                ->where('status', 1); // Approved by this user
+                        });
+                    });
+                } else {
+                    // Other approvers: Only fully approved requests
+                    $requests->where(function ($q) {
+                        // Check if workflow is completed and approved
+                        $q->whereHas('workflow', function ($wfQuery) {
+                            $wfQuery->where('work_flow_completed', 1)
+                                ->where('work_flow_status', 1); // Approved status
+                        })
+                        // OR check if request status is approved (fallback)
+                        ->orWhere('status', 'approved');
+                    });
+                }
+
+                // Visibility: HR sees all; others limited to scope
+                if (!$isHR) {
+                    if ($scope === '__SELF__') {
+                        $requests->where('user_id', $user->id);
+                    } elseif (is_array($scope) && !empty($scope)) {
+                        if ($isHECMember) {
+                            // HEC members: Show requests from their scope OR requests they've approved
+                            $requests->where(function ($q) use ($scope, $user) {
+                                $q->whereHas('user', function ($userQuery) use ($scope) {
+                                    $userQuery->whereIn('deptId', $scope);
+                                })
+                                ->orWhereHas('workflow.histories', function ($h) use ($user) {
+                                    $h->where('attended_by', $user->id)
+                                        ->where('status', 1); // Approved by this user
+                                });
+                            });
+                        } else {
+                            // Other approvers: Only from their scope
+                            $requests->whereHas('user', function ($userQuery) use ($scope) {
+                                $userQuery->whereIn('deptId', $scope);
+                            });
+                        }
+                    } else {
+                        // Empty scope
+                        if ($isHECMember) {
+                            // HEC members: Show requests they've approved
+                            $requests->whereHas('workflow.histories', function ($h) use ($user) {
+                                $h->where('attended_by', $user->id)
+                                    ->where('status', 1); // Approved by this user
+                            });
+                        } else {
+                            // Other approvers: No results
+                            $requests->whereRaw('1=0');
+                        }
+                    }
+                }
+                // For HR, no additional filter needed (sees all departments)
+
+                $requests = $requests->orderBy('created_at', 'desc')->get();
+            } else {
+                // Approvers: Get pending requests assigned to them for approval
+                $requests = OnCallRequest::with([
+                    'user.department',
+                    'workflow.histories' => fn($q) => $q->with(['attendedBy', 'forwardedBy', 'approver'])->orderBy('id', 'desc'),
+                ])
+                    ->where('status', 'pending')
+                    ->whereHas('workflow', function ($q) {
+                        $q->where('work_flow_completed', 0)
+                            ->whereHas('histories', fn($h) => $h->where('attended_by', Auth::id())->where('status', 0));
+                    })
+                    ->orderBy('created_at', 'desc')
+                    ->get();
+            }
+
+            return view('oncall_requests.view', compact('requests', 'filter'));
         } else {
             // Regular users: Show their own requests for review
             $requests = OnCallRequest::where('user_id', $user->id)
@@ -611,7 +751,7 @@ class OnCallRequestController extends Controller
     {
         try {
             $request = OnCallRequest::with([
-                'user',
+                'user.department',
                 'workflow.histories.attendedBy',
                 'workflow.histories.approver',
             ])->findOrFail($id);
@@ -639,29 +779,30 @@ class OnCallRequestController extends Controller
 
         $user = Auth::user();
 
-        // Build months list Jan..current (inclusive)
-        $now = Carbon::now();
-        $months = [];
-        $cursor = Carbon::create($now->year, 1, 1);
-        while ($cursor->lte($now)) {
-            $months[] = $cursor->format('F Y');
-            $cursor->addMonth();
-        }
+        // Provide months and year separately (like create method)
+        $months = [
+            'January',
+            'February',
+            'March',
+            'April',
+            'May',
+            'June',
+            'July',
+            'August',
+            'September',
+            'October',
+            'November',
+            'December'
+        ];
 
-        // Ensure "previous month" shows even when it's last year's December
-        $defaultClaimMonth = $now->copy()->subMonthNoOverflow()->format('F Y');
-        if (!in_array($defaultClaimMonth, $months, true)) {
-            array_unshift($months, $defaultClaimMonth);
-        }
-        // Optional: most recent first
-        $months = array_values(array_unique(array_reverse($months)));
+        // Pre-fill from existing request
+        $selectedMonth = $onCallRequest->locum_month ?? 'December';
+        $selectedYear = $onCallRequest->locum_year ?? (int)Carbon::now()->subMonthNoOverflow()->year;
 
-        // From your existing setup
-        $educationLevels = array_keys($this->onCallRates);
-        $onCallRates     = $this->onCallRates;
+        // Show only rates that are active during edit (active today)
+        $onCallRates = $this->getOnCallRates($user, Carbon::today());
+        $educationLevels = array_keys($onCallRates);
 
-        // Pre-fill
-        $selectedMonth = trim(($onCallRequest->locum_month ?? '') . ' ' . ($onCallRequest->locum_year ?? ''));
         $existingDays  = $onCallRequest->worked_days ?? [];
 
         return view('oncall_requests.edit', compact(
@@ -671,8 +812,8 @@ class OnCallRequestController extends Controller
             'onCallRates',
             'onCallRequest',
             'selectedMonth',
-            'existingDays',
-            'defaultClaimMonth'
+            'selectedYear',
+            'existingDays'
         ));
     }
 
@@ -686,9 +827,11 @@ class OnCallRequestController extends Controller
         );
 
         try {
+            // Validate education_level against rates that are active during edit (active today)
             $validated = $request->validate([
-                'education_level'       => ['required', Rule::in(array_keys($this->onCallRates))],
-                'locum_month'           => ['required', 'string', 'regex:/^(January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}$/'],
+                'education_level'       => ['required', Rule::in(array_keys($this->getOnCallRates(Auth::user(), Carbon::today())))],
+                'locum_year'            => ['required', 'integer', 'min:2020', 'max:' . (date('Y') + 1)],
+                'locum_month'           => ['required', 'string', Rule::in(['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'])],
                 'worked_days'           => ['required', 'array', 'min:1'],
                 'worked_days.*.worked'  => ['required', 'in:0,1'],
                 'worked_days.*.hours'   => ['required_if:worked_days.*.worked,1', 'numeric', 'min:0', 'max:24'],
@@ -700,6 +843,21 @@ class OnCallRequestController extends Controller
         } catch (ValidationException $e) {
             return back()->withErrors($e->errors())->withInput();
         }
+
+        // Prevent future month claims
+        $selectedYear = (int)$validated['locum_year'];
+        $selectedMonth = $validated['locum_month'];
+        $monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        $selectedMonthIndex = array_search($selectedMonth, $monthNames);
+
+        $now = Carbon::now();
+        $currentYear = (int)$now->year;
+        $currentMonth = (int)$now->month - 1; // 0-11
+
+        if ($selectedYear > $currentYear || ($selectedYear === $currentYear && $selectedMonthIndex > $currentMonth)) {
+            return back()->withErrors(['locum_month' => 'You cannot claim for future months.'])->withInput();
+        }
+
         // If user says "Yes" but neither uploaded a new file nor had an existing one => error
         $wantsSpecial = (int)$validated['has_special_task'] === 1;
         if ($wantsSpecial && !$request->hasFile('special_task_document') && empty($onCallRequest->special_task_path)) {
@@ -708,19 +866,8 @@ class OnCallRequestController extends Controller
                 ->withInput();
         }
 
-
-        //current & future months
-        $tz = config('app.timezone', 'Africa/Dar_es_Salaam');
-        $claimedMonth = \Carbon\Carbon::createFromFormat('F Y', $validated['locum_month'], $tz)->startOfMonth();
-        $currentMonth = \Carbon\Carbon::now($tz)->startOfMonth();
-
-        if ($claimedMonth->greaterThanOrEqualTo($currentMonth)) {
-            return back()->withErrors([
-                'locum_month' => 'You cannot submit or claim for the current or a future month. Please select a past month.'
-            ])->withInput();
-        }
-        // Split "F Y" into month & year
-        [$monthName, $year] = explode(' ', $validated['locum_month']);
+        $month = $validated['locum_month'];
+        $year = (int)$validated['locum_year'];
 
         // Recompute totals (same approach as store())
         $totalDays  = 0;
@@ -746,7 +893,14 @@ class OnCallRequestController extends Controller
             return back()->withErrors(['worked_days' => 'At least one day must be selected'])->withInput();
         }
 
-        $rate        = $this->onCallRates[$validated['education_level']];
+        // For rejected claims being edited, use the stored rate_used (preserves old rate)
+        // Otherwise use rates that are active during edit (active today)
+        if ($onCallRequest->rate_used) {
+            $rate = (float)$onCallRequest->rate_used;
+        } else {
+            $onCallRates = $this->getOnCallRates($onCallRequest->user, Carbon::today());
+            $rate = $onCallRates[$validated['education_level']] ?? 0;
+        }
         $totalAmount = $totalDays * $rate;
 
         // Check if requester is a line manager (same logic as store method)
@@ -778,12 +932,13 @@ class OnCallRequestController extends Controller
             // Update the request
             $onCallRequest->update([
                 'education_level'       => $validated['education_level'],
-                'locum_month'           => $monthName,
+                'locum_month'           => $month,
                 'locum_year'            => $year,
                 'number_of_days'        => $totalDays,
                 'total_hours'           => $totalHours,
                 'total_amount'          => $totalAmount,
                 'total_amount_payable'  => $totalAmount,
+                'rate_used'             => $rate, // Store/update the rate used
                 'worked_days'           => $validated['worked_days'],
                 'description'           => $validated['description'],
                 'status'                => 'pending',
@@ -1561,15 +1716,20 @@ class OnCallRequestController extends Controller
 
     public function approvedRequests(Request $request)
     {
-        $user  = Auth::user();
-        $scope = $this->allowedDepartmentIds($user); // your existing visibility
+        $user     = Auth::user();
+        $isHR     = $user->hasRole('hr');
+        $scope    = $this->allowedDepartmentIds($user); // visibility
 
         // Payroll Year/Month (default: now in TZ)
         $now      = Carbon::now('Africa/Dar_es_Salaam');
         $payYear  = (int)($request->query('pay_year',  $now->year));
         $payMonth = $this->resolveMonth($request->query('pay_month', $now->format('F'))) ?? (int)$now->month;
 
-        // Optional department filter (within visibility)
+        // Optional filters
+        $filterDept   = $request->query('department');
+        $filterUser   = trim((string)$request->query('employee'));
+
+        // Department scope
         if ($scope === '__SELF__') {
             $deptIds = $user->deptId ? [(int)$user->deptId] : [];
         } elseif (is_array($scope)) {
@@ -1578,35 +1738,54 @@ class OnCallRequestController extends Controller
             $deptIds = [];
         }
         $departments = empty($deptIds) ? collect() : Departments::whereIn('id', $deptIds)->orderBy('dept_name')->get();
-        $filterDept  = $request->query('department');
 
-        // Pull rows in scope that were APPROVED BY ME during the payroll month
         $q = OnCallRequest::with(['user.department', 'workflow.histories']);
 
-        // Visibility
-        if ($scope === '__SELF__') {
-            $q->where('user_id', $user->id);
-        } elseif (is_array($scope) && !empty($scope)) {
-            $q->whereHas('user', fn($u) => $u->whereIn('deptId', $scope));
-        } else {
-            $q->whereRaw('1=0');
+        // Visibility: HR sees all; others limited to scope
+        if (!$isHR) {
+            if ($scope === '__SELF__') {
+                $q->where('user_id', $user->id);
+            } elseif (is_array($scope) && !empty($scope)) {
+                $q->whereHas('user', fn($u) => $u->whereIn('deptId', $scope));
+            } else {
+                $q->whereRaw('1=0');
+            }
         }
 
-        // Restrict to requests where *this user* has an *Approved* action in the payroll year/month
-        $q->whereHas('workflow.histories', function ($h) use ($user, $payYear, $payMonth) {
-            $h->where('attended_by', $user->id)
-                ->where('action_taken', 'Approved')
+        // Approved in selected month/year
+        $q->whereHas('workflow.histories', function ($h) use ($user, $payYear, $payMonth, $isHR) {
+            $h->where('action_taken', 'Approved')
                 ->whereYear('created_at', $payYear)
                 ->whereMonth('created_at', $payMonth);
+
+            // Non-HR: only approvals by current user
+            if (!$isHR) {
+                $h->where('attended_by', $user->id);
+            }
         });
 
-        // Optional department filter
-        if ($filterDept && ($scope !== '__SELF__') && in_array((int)$filterDept, $deptIds, true)) {
-            $q->whereHas('user', fn($u) => $u->where('deptId', (int)$filterDept));
+        // Optional department filter (must be within scope for non-HR)
+        if ($filterDept) {
+            $deptIdInt = (int)$filterDept;
+            if ($isHR || in_array($deptIdInt, $deptIds, true)) {
+                $q->whereHas('user', fn($u) => $u->where('deptId', $deptIdInt));
+            }
         }
 
-        // In payroll we typically pay APPROVED only; but you can still show status column
-        $q->whereIn('status', ['approved', 'pending', 'rejected']);
+        // Optional employee filter (HR only)
+        if ($isHR && $filterUser !== '') {
+            $q->whereHas('user', function ($u) use ($filterUser) {
+                $u->where(function ($sub) use ($filterUser) {
+                    $sub->where('fname', 'like', "%{$filterUser}%")
+                        ->orWhere('lname', 'like', "%{$filterUser}%")
+                        ->orWhere('username', 'like', "%{$filterUser}%")
+                        ->orWhere('email', 'like', "%{$filterUser}%");
+                });
+            });
+        }
+
+        // Only approved requests (done)
+        $q->where('status', 'approved');
 
         $approvedRequests = $q->orderBy('created_at', 'desc')->get();
 
@@ -1618,6 +1797,8 @@ class OnCallRequestController extends Controller
             'departments'      => $departments,
             'payYear'          => $payYear,
             'payMonth'         => $monthName, // "October"
+            'isHR'             => $isHR,
+            'filterUser'       => $filterUser,
         ]);
     }
 
@@ -1694,18 +1875,31 @@ class OnCallRequestController extends Controller
     public function report(Request $request)
     {
         $user = Auth::user();
+        $isHr = $user->hasRole('hr');
+        $isLineManager = $user->hasRole('line-manager');
+        $isHecMember = $user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro']);
 
-        // Restrict access to HR role only
-        if (!$user->hasRole('hr')) {
-            abort(403, 'Unauthorized. Only HR users can access this area.');
-        }
+        // Determine department scope using the existing helper
+        $scope = $this->allowedDepartmentIds($user);
+
+        // Build a reusable closure for role-based query scoping
+        $applyScope = function ($query) use ($scope, $user) {
+            if ($scope === '__SELF__' || (is_array($scope) && empty($scope))) {
+                $query->where('user_id', $user->id);
+            } elseif (is_array($scope) && !empty($scope)) {
+                // HR gets full array of all departments; LM/HEC get their dept subset
+                $query->whereHas('user', fn($q) => $q->whereIn('deptId', $scope));
+            }
+            // If scope covers all (HR), no filter applied
+        };
 
         // Summary filters
         $summaryYear  = $request->query('summary_year');
         $summaryMonth = $request->query('summary_month');
 
         // Get all requests EXCEPT those fully approved by HR (to show pending requests that need attention)
-        $actionedRequests = OnCallRequest::whereHas('workflow')
+        $actionedRequests = OnCallRequest::where(function ($q) use ($applyScope) { $applyScope($q); })
+            ->whereHas('workflow')
             ->whereDoesntHave('workflow.histories', function ($query) {
                 // Exclude requests where HR has approved (status = 1 and step_name = 'HR Approval')
                 $query->where('step_name', 'HR Approval')
@@ -1798,16 +1992,17 @@ class OnCallRequestController extends Controller
         $currentMonth = $paymentMonth ?? now()->month;
         $currentYear = $paymentYear ?? now()->year;
 
-        $paymentReport = OnCallRequest::whereHas('workflow.histories', function ($q) use ($currentYear, $currentMonth, $paymentYear, $paymentMonth) {
-            $q->where('step_name', 'HR Approval')
-                ->where('status', 1); // Approved
-            if ($paymentYear) {
-                $q->whereYear('updated_at', $currentYear);
-            }
-            if ($paymentMonth) {
-                $q->whereMonth('updated_at', $currentMonth);
-            }
-        })
+        $paymentReport = OnCallRequest::where(function ($q) use ($applyScope) { $applyScope($q); })
+            ->whereHas('workflow.histories', function ($q) use ($currentYear, $currentMonth, $paymentYear, $paymentMonth) {
+                $q->where('step_name', 'HR Approval')
+                    ->where('status', 1); // Approved
+                if ($paymentYear) {
+                    $q->whereYear('updated_at', $currentYear);
+                }
+                if ($paymentMonth) {
+                    $q->whereMonth('updated_at', $currentMonth);
+                }
+            })
             ->whereHas('workflow', fn($q) => $q->where('work_flow_completed', 1))
             ->with([
                 'user.department',
@@ -1846,10 +2041,11 @@ class OnCallRequestController extends Controller
         $toMonth = $request->query('to_month');
 
         // Get all approved requests for trend analysis
-        $allApproved = OnCallRequest::whereHas('workflow.histories', function ($q) {
-            $q->where('step_name', 'HR Approval')
-                ->where('status', 1);
-        })
+        $allApproved = OnCallRequest::where(function ($q) use ($applyScope) { $applyScope($q); })
+            ->whereHas('workflow.histories', function ($q) {
+                $q->where('step_name', 'HR Approval')
+                    ->where('status', 1);
+            })
             ->whereHas('workflow', fn($q) => $q->where('work_flow_completed', 1))
             ->with(['user.department', 'workflow.histories' => function ($q) {
                 $q->where('step_name', 'HR Approval')
@@ -1865,8 +2061,14 @@ class OnCallRequestController extends Controller
             });
         }
 
-        // Get all departments for filter dropdown
-        $allDepartments = Departments::orderBy('dept_name', 'asc')->get();
+        // Department list: scoped by role
+        if ($isHr) {
+            $allDepartments = Departments::orderBy('dept_name', 'asc')->get();
+        } elseif (is_array($scope) && !empty($scope)) {
+            $allDepartments = Departments::whereIn('id', $scope)->orderBy('dept_name', 'asc')->get();
+        } else {
+            $allDepartments = $user->department ? collect([$user->department]) : collect();
+        }
 
         // Determine date range for monthly trends
         $startDate = null;
@@ -1907,12 +2109,14 @@ class OnCallRequestController extends Controller
             $monthName = $currentDate->format('M Y'); // Month and year for chart
 
             $monthRequests = $allApproved->filter(function ($req) use ($currentDate) {
-                $hrApproval = $req->workflow?->histories?->first();
-                if (!$hrApproval) return false;
-                $approvedAt = $hrApproval->updated_at ?? $hrApproval->created_at;
-                if (!$approvedAt) return false;
-                $approved = Carbon::parse($approvedAt);
-                return $approved->year == $currentDate->year && $approved->month == $currentDate->month;
+                // Group by the month the work was done (locum_month/locum_year), not when HR approved
+                try {
+                    if (!empty($req->locum_month) && !empty($req->locum_year)) {
+                        $locumDate = Carbon::parse('1 ' . $req->locum_month . ' ' . $req->locum_year);
+                        return $locumDate->year == $currentDate->year && $locumDate->month == $currentDate->month;
+                    }
+                } catch (\Throwable $e) {}
+                return false;
             });
 
             // Group by department for this month
@@ -2013,10 +2217,11 @@ class OnCallRequestController extends Controller
             ->unique()->sortDesc()->values();
 
         // Get payment report year/month options for filters
-        $paymentYearOptions = OnCallRequest::whereHas('workflow.histories', function ($q) {
-            $q->where('step_name', 'HR Approval')
-                ->where('status', 1);
-        })
+        $paymentYearOptions = OnCallRequest::where(function ($q) use ($applyScope) { $applyScope($q); })
+            ->whereHas('workflow.histories', function ($q) {
+                $q->where('step_name', 'HR Approval')
+                    ->where('status', 1);
+            })
             ->whereHas('workflow', fn($q) => $q->where('work_flow_completed', 1))
             ->get()
             ->map(function ($req) {
@@ -2046,7 +2251,10 @@ class OnCallRequestController extends Controller
             'paymentYear',
             'paymentMonth',
             'allDepartments',
-            'analyticsDept'
+            'analyticsDept',
+            'isHr',
+            'isLineManager',
+            'isHecMember'
         ));
     }
 
@@ -2156,7 +2364,20 @@ class OnCallRequestController extends Controller
         })->values();
 
         return response()->json([
+            'request' => [
+                'claim_period'       => ($req->locum_month ?? '') . ' ' . ($req->locum_year ?? ''),
+                'number_of_days'     => $req->number_of_days ?? '—',
+                'total_hours'        => $req->total_hours ?? '—',
+                'rate_used'          => $req->rate_used ? number_format((float) $req->rate_used, 2) : '—',
+                'total_amount'       => $req->total_amount ? number_format((float) $req->total_amount, 2) : '—',
+                'total_amount_payable' => $req->total_amount_payable ? number_format((float) $req->total_amount_payable, 2) : '—',
+                'reason'             => $req->reason ?? '—',
+                'description'        => $req->description ?? null,
+                'has_special_task'   => (bool) ($req->has_special_task ?? false),
+                'submitted_at'       => $req->created_at ? $req->created_at->timezone('Africa/Dar_es_Salaam')->format('d M Y, H:i') : '—',
+            ],
             'user' => [
+                'name'       => trim(($req->user->fname ?? '') . ' ' . ($req->user->lname ?? '')) ?: ($req->user->username ?? '—'),
                 'username'   => $req->user->username ?? '—',
                 'email'      => $req->user->email ?? '—',
                 'department' => optional($req->user->department)->dept_name ?? '—',
@@ -2178,9 +2399,9 @@ class OnCallRequestController extends Controller
     {
         $user  = Auth::user();
 
-        // Restrict access to HR role only
-        if (!$user->hasRole('hr')) {
-            abort(403, 'Unauthorized. Only HR users can export reports.');
+        // Restrict access to HR and HEC members (COO, CFO, CMS, CCDRO)
+        if (!$user->hasRole('hr') && !$user->hasAnyRole(['coo', 'cfo', 'cms', 'ccdro'])) {
+            abort(403, 'Unauthorized. Only HR and HEC members can export reports.');
         }
 
         $scope = $this->allowedDepartmentIds($user);
@@ -2325,7 +2546,7 @@ class OnCallRequestController extends Controller
         return $user->hasAnyRole(['incharge', 'in-charge']);
     }
 
-    public function createForStaff()
+    public function createForStaff(Request $request)
     {
         $actor = Auth::user();
         abort_if(!$actor, 302, 'Login required.');
@@ -2361,8 +2582,14 @@ class OnCallRequestController extends Controller
         }
         $months = array_values(array_unique(array_reverse($months)));
 
-        $educationLevels = array_keys($this->onCallRates);
-        $onCallRates     = $this->onCallRates;
+        // For in-charge creating for staff, use the staff member's assigned rates
+        $staffUser = null;
+        if ($request->has('user_id')) {
+            $staffUser = User::find($request->user_id);
+        }
+        // Show only rates that are active during create (active today)
+        $onCallRates = $this->getOnCallRates($staffUser ?? $actor, Carbon::today());
+        $educationLevels = array_keys($onCallRates);
 
         // Build a view similar to your self-create, but includes a "Staff Member" select.
         return view('oncall_requests.create_for_staff', compact(
@@ -2388,10 +2615,16 @@ class OnCallRequestController extends Controller
                 ->with('error', 'Only In-Charge users can claim on-call for staff.');
         }
 
+        // Get the staff user to check their assigned rates
+        $staffUser = User::find($request->user_id);
+
+        // Use rates that are active during create (active today)
+        $onCallRates = $this->getOnCallRates($staffUser, Carbon::today());
+
         // Validate input
         $validated = $request->validate([
             'user_id'               => ['required', Rule::exists('users', 'id')->where(fn($q) => $q->where('deptId', $actor->deptId))],
-            'education_level'       => ['required', Rule::in(array_keys($this->onCallRates))],
+            'education_level'       => ['required', Rule::in(array_keys($onCallRates))],
             'locum_month'           => ['required', 'string', 'regex:/^(January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$/'],
             'worked_days'           => ['required', 'array', 'min:1'],
             // <-- Not required; only present if the checkbox is ticked
@@ -2456,7 +2689,7 @@ class OnCallRequestController extends Controller
         }
 
         // Amount by education level
-        $rate        = $this->onCallRates[$validated['education_level']];
+        $rate        = $onCallRates[$validated['education_level']] ?? 0;
         $totalAmount = $totalDays * $rate;
 
         DB::beginTransaction();
@@ -2471,6 +2704,7 @@ class OnCallRequestController extends Controller
                 'total_hours'           => $totalHours,
                 'total_amount'          => $totalAmount,
                 'total_amount_payable'  => $totalAmount,
+                'rate_used'             => $rate, // Store the rate used at creation time
                 'worked_days'           => $validated['worked_days'], // array -> JSON column
                 'description'           => $validated['description'] ?? null,
                 'status'                => 'pending',

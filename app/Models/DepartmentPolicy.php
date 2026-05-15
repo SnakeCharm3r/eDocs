@@ -8,26 +8,67 @@ use Illuminate\Database\Eloquent\Model;
 class DepartmentPolicy extends Model
 {
     use HasFactory;
-       protected $fillable = [
-        'department_id',
-        'title',
-        'content',
-        'created_by',
 
+    protected $table = 'department_policies';
+
+    protected $fillable = [
+        'title',
+        'document_code',
+        'description',
+        'pdf_path',
+        'department_id',
+        'visible_to_all_staff',
+        'status',
+        'view_count',
+        'created_by',
+        'updated_by',
     ];
-    public function departments()
+
+    protected $casts = [
+        'visible_to_all_staff' => 'boolean',
+    ];
+
+    /**
+     * Policy belongs to a Department
+     */
+    public function department()
     {
-        return $this->belongsToMany(Departments::class, 'department_policy_department', 'department_policy_id', 'department_id');
+        return $this->belongsTo(Departments::class, 'department_id');
     }
 
-    // Relationship with User (creator)
-    public function user()
+    /**
+     * Policy created by a User
+     */
+    public function creator()
     {
         return $this->belongsTo(User::class, 'created_by');
     }
-    public function department()
-{
-    return $this->belongsTo(Departments::class, 'department_id');
-}
 
+    /**
+     * Policy updated by a User
+     */
+    public function updatedBy()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
+    }
+
+    public function isActive(): bool
+    {
+        return $this->status === 'active';
+    }
+
+    public function isArchived(): bool
+    {
+        return $this->status === 'archived';
+    }
+
+    public function scopeActive($query)
+    {
+        return $query->where('status', 'active');
+    }
+
+    public function scopeArchived($query)
+    {
+        return $query->where('status', 'archived');
+    }
 }

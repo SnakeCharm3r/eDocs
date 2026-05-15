@@ -35,7 +35,6 @@ class CcbrtContract extends Model
         'end_date',
         'status',
         'lifecycle_stage',
-        'is_archived',
         'likelihood_rating',
         'impact_if_not_requested',
         'overall_risk',
@@ -56,6 +55,7 @@ class CcbrtContract extends Model
         'created_by',
         'last_notification_sent_at',
         'notification_escalation_level',
+        'expired_notification_sent_at',
         'line_manager_rating',
         'hec_rating',
         'contract_action',
@@ -73,11 +73,11 @@ class CcbrtContract extends Model
         'alert_30_days' => 'boolean',
         'alert_60_days' => 'boolean',
         'alert_90_days' => 'boolean',
-        'is_archived' => 'boolean',
         'creation_date' => 'date',
         'start_date' => 'date',
         'end_date' => 'date',
         'last_notification_sent_at' => 'datetime',
+        'expired_notification_sent_at' => 'datetime',
     ];
 
     /**

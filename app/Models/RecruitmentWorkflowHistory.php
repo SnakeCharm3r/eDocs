@@ -32,7 +32,7 @@ class RecruitmentWorkflowHistory extends Model
      */
     public function requisition(): BelongsTo
     {
-        return $this->belongsTo(RecruitmentRequisition::class, 'requisition_id');
+        return $this->belongsTo(Requisition::class, 'requisition_id');
     }
 
     /**
@@ -48,7 +48,7 @@ class RecruitmentWorkflowHistory extends Model
      */
     public function getActionBadgeClass(): string
     {
-        return match($this->action) {
+        return match ($this->action) {
             'approved', 'no_objection', 'confirmed' => 'success',
             'rejected', 'objection', 'declined' => 'danger',
             'returned', 'needs_more_info' => 'warning',
@@ -57,10 +57,3 @@ class RecruitmentWorkflowHistory extends Model
         };
     }
 }
-
-
-
-
-
-
-

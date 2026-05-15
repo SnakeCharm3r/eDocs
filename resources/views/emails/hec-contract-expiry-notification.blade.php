@@ -12,10 +12,10 @@
     .greeting{font-size:16px;color:#333;margin-bottom:20px}
     .info-card{background-color:#f8f9fa;border:1px solid #e9ecef;border-radius:8px;padding:20px;margin:25px 0}
     .info-card h3{margin:0 0 15px 0;font-size:16px;color:#007A33;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #007A33;padding-bottom:8px}
-    .info-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #e9ecef}
+    .info-row{display:table;width:100%;table-layout:fixed;padding:10px 0;border-bottom:1px solid #e9ecef}
     .info-row:last-child{border-bottom:none}
-    .info-label{font-weight:600;color:#555;flex:1}
-    .info-value{color:#333;flex:1;text-align:right;font-weight:500}
+    .info-label{font-weight:600;color:#555;display:table-cell;width:40%;vertical-align:top}
+    .info-value{color:#333;display:table-cell;width:60%;text-align:right;font-weight:500;vertical-align:top}
     .action-button{display:inline-block;background-color:#007A33;color:#fff!important;text-decoration:none;padding:12px 30px;border-radius:6px;font-weight:600;font-size:16px;text-align:center;margin:25px 0;transition:background-color 0.3s}
     .action-button:hover{background-color:#005a25}
     .button-container{text-align:center}
@@ -25,7 +25,7 @@
     .footer-text{font-size:12px;color:#888;margin-top:10px}
     .alert-expired{background-color:#fff3cd;border:1px solid #ffc107;color:#856404;padding:15px;border-radius:8px;margin:20px 0}
     .alert-near{background-color:#cce5ff;border:1px solid #b8daff;color:#004085;padding:15px;border-radius:8px;margin:20px 0}
-    @media (max-width:600px){.content{padding:20px 15px}.info-row{flex-direction:column}.info-value{text-align:left;margin-top:5px}.action-button{display:block;width:100%;box-sizing:border-box}}
+    @media (max-width:600px){.content{padding:20px 15px}.info-row{display:block}.info-value{display:block;width:100%;text-align:left;margin-top:4px}.action-button{display:block;width:100%;box-sizing:border-box}}
   </style>
 </head>
 <body>
@@ -70,6 +70,12 @@
           <span class="info-label">Type:</span>
           <span class="info-value">{{ $contract->contract_type ?? 'N/A' }}</span>
         </div>
+        @if ($contract->vendor)
+        <div class="info-row">
+          <span class="info-label">Vendor:</span>
+          <span class="info-value">{{ $contract->vendor->name }}</span>
+        </div>
+        @endif
         <div class="info-row">
           <span class="info-label">End date:</span>
           <span class="info-value">{{ $contract->end_date ? $contract->end_date->format('d M Y') : 'N/A' }}</span>

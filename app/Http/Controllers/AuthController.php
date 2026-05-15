@@ -6,6 +6,8 @@ use DB;
 use Mpdf\Mpdf;
 use App\Models\Unit;
 use App\Models\User;
+use App\Models\Contract;
+use App\Models\ContractTemplate;
 use App\Models\Policy;
 use App\Models\IDCards;
 use App\Models\JobTitle;
@@ -55,17 +57,25 @@ class AuthController extends Controller
 
     public function login()
     {
-
-
-        return view('auth.login');
+        $externalLinks = \App\Models\ExternalSystemLink::getActiveLinks();
+        return view('auth.login', compact('externalLinks'));
     }
     //get All user
-    public function getAllUser()
+    public function getAllUser(Request $request)
     {
-        $users = User::with('jobTitle', 'department', 'roles')->get();
+        $users = User::with('jobTitle', 'department.divisions', 'roles', 'permissions', 'assignedEntity', 'assignedEntities')->get();
         $jobTitles = JobTitle::all();
         $departments = Departments::all();
-        $allRoles = \Spatie\Permission\Models\Role::pluck('name')->toArray();
+        $allRoles = \Spatie\Permission\Models\Role::where('name', 'not like', 'finance-officer-%')
+            ->pluck('name')
+            ->toArray();
+        $allPermissions = \Spatie\Permission\Models\Permission::orderBy('name')->pluck('name')->toArray();
+
+        // Stat counts for dashboard cards
+        $totalUsers = $users->count();
+        $activeUsers = $users->where('status', 'active')->count();
+        $inactiveUsers = $users->whereIn('status', ['inactive', 'pending', 'deactivated'])->count();
+        $pendingUsers = $users->where('status', 'pending')->count();
 
         // Get locked users count
         $lockedUsersCount = User::where('is_locked', true)
@@ -77,7 +87,25 @@ class AuthController extends Controller
             ->where('attempted_at', '>=', Carbon::now()->subDay())
             ->count();
 
-        return view('role-permission.user.index', compact('users', 'jobTitles', 'departments', 'allRoles', 'lockedUsersCount', 'recentFailedAttempts'));
+        return view('role-permission.user.index', compact(
+            'users', 'jobTitles', 'departments', 'allRoles', 'allPermissions',
+            'totalUsers', 'activeUsers', 'inactiveUsers', 'pendingUsers',
+            'lockedUsersCount', 'recentFailedAttempts'
+        ));
+    }
+
+    public function exportUsers()
+    {
+        $users = User::with('jobTitle', 'department', 'roles', 'permissions', 'employmentType')
+            ->orderBy('fname')
+            ->get();
+
+        $filename = 'CCBRT_User_Report_' . now()->format('Y-m-d') . '.xlsx';
+
+        return \Maatwebsite\Excel\Facades\Excel::download(
+            new \App\Exports\UsersExport($users),
+            $filename
+        );
     }
 
     // Get failed login attempts log
@@ -202,8 +230,9 @@ class AuthController extends Controller
     }
     public function employee($id)
     {
-        $user = User::with('department', 'jobTitle', 'employmentType')->findOrFail($id);
+        $user = User::with('department', 'jobTitle', 'employmentType', 'onCallRates')->findOrFail($id);
         $policies = Policy::orderBy('created_at', 'desc')->get();
+        $allOnCallRates = \App\Models\OnCallRate::where('is_active', true)->orderBy('education_level')->get();
 
         // Check profile completion status for HR to fill in details
         $hasPersonalDetails = $user->place_of_birth && $user->marital_status;
@@ -231,7 +260,8 @@ class AuthController extends Controller
             'hasCcbrtRelation',
             'hasConflictInterest',
             'profileComplete',
-            'existingWorkflow'
+            'existingWorkflow',
+            'allOnCallRates'
         ));
     }
 
@@ -303,7 +333,7 @@ class AuthController extends Controller
     {
 
         // Get all users with relations
-        $users = User::with(['department', 'jobTitle'])->get();
+        $users = User::with(['department.divisions', 'jobTitle', 'employmentType'])->get();
 
         // Distinct statuses for dynamic columns (e.g., active, inactive, pending, deactivated, etc.)
         $statusColumns = User::select('status')->distinct()->pluck('status')->filter()->values();
@@ -358,12 +388,97 @@ class AuthController extends Controller
         // Get all departments for filter dropdown
         $allDepartments = Departments::all();
 
+        // Employment contract type summary
+        $contractTypeCounts = User::select('employment_types.employment_type', DB::raw('COUNT(*) as total'))
+            ->join('employment_types', 'users.employment_typeId', '=', 'employment_types.id')
+            ->groupBy('employment_types.employment_type')
+            ->pluck('total', 'employment_type');
+
+        // Employment type breakdown by status (for detailed table)
+        $contractTypeByStatus = User::select(
+                'employment_types.employment_type',
+                'users.status',
+                DB::raw('COUNT(*) as total')
+            )
+            ->join('employment_types', 'users.employment_typeId', '=', 'employment_types.id')
+            ->groupBy('employment_types.employment_type', 'users.status')
+            ->get();
+
+        $contractSummaries = [];
+        foreach ($contractTypeByStatus as $row) {
+            $type = $row->employment_type;
+            if (!isset($contractSummaries[$type])) {
+                $contractSummaries[$type] = ['totals' => [], 'sum' => 0];
+            }
+            $contractSummaries[$type]['totals'][$row->status] = (int) $row->total;
+            $contractSummaries[$type]['sum'] += (int) $row->total;
+        }
+
+        // All entities (divisions) for filter dropdown
+        $allEntities = \App\Models\Division::where('delete_status', '!=', 1)
+            ->orderBy('name')
+            ->get();
+
+        // ===== Staff contracts expiring within 90 days =====
+        $today = \Carbon\Carbon::today();
+        $ninetyDaysOut = $today->copy()->addDays(90);
+
+        $expiringStaff = User::where('status', 'active')
+            ->whereNotNull('ending_date')
+            ->whereDate('ending_date', '>=', $today)
+            ->whereDate('ending_date', '<=', $ninetyDaysOut)
+            ->with(['department', 'employmentType'])
+            ->orderBy('ending_date', 'asc')
+            ->get();
+
+        // Compute days until expiry
+        foreach ($expiringStaff as $staff) {
+            $staff->days_until_expiry = (int) $today->diffInDays(\Carbon\Carbon::parse($staff->ending_date), false);
+        }
+
+        // Check for linked requisitions (renewal or employee_id match)
+        if ($expiringStaff->isNotEmpty()) {
+            $staffIds = $expiringStaff->pluck('id')->toArray();
+
+            $reqByEmployee = \App\Models\Requisition::whereIn('employee_id', $staffIds)
+                ->whereNotIn('status', ['rejected', 'cancelled', 'draft'])
+                ->get()
+                ->keyBy('employee_id');
+
+            $reqByUser = \App\Models\Requisition::where('position_type', 'renewal')
+                ->whereIn('user_id', $staffIds)
+                ->whereNotIn('status', ['rejected', 'cancelled', 'draft'])
+                ->get()
+                ->keyBy('user_id');
+
+            // Notification milestones already sent
+            $sentNotifications = \App\Models\StaffContractNotification::whereIn('user_id', $staffIds)
+                ->get()
+                ->groupBy('user_id');
+
+            foreach ($expiringStaff as $staff) {
+                $req = $reqByEmployee[$staff->id] ?? $reqByUser[$staff->id] ?? null;
+                $staff->active_requisition_id = $req?->id;
+                $staff->active_requisition_access_id = $req?->access_id;
+                $staff->requisition_status = $req?->status;
+                $staff->requisition_contract_type = $req?->contract_type;
+                $staff->requisition_required_start = $req?->required_start_date;
+                $staff->sent_milestones = isset($sentNotifications[$staff->id])
+                    ? $sentNotifications[$staff->id]->pluck('milestone')->unique()->values()->toArray()
+                    : [];
+            }
+        }
+
         return view('employees_details.index', [
-            'users'          => $users,
-            'statusCounts'   => $statusCounts,
-            'deptSummaries'  => $deptSummaries,
-            'statusColumns'  => $statusColumns, // dynamic columns for the department summary + cards
-            'departments'    => $allDepartments,
+            'users'               => $users,
+            'statusCounts'        => $statusCounts,
+            'deptSummaries'       => $deptSummaries,
+            'statusColumns'       => $statusColumns,
+            'departments'         => $allDepartments,
+            'contractTypeCounts'  => $contractTypeCounts,
+            'contractSummaries'   => $contractSummaries,
+            'entities'            => $allEntities,
+            'expiringStaff'       => $expiringStaff,
         ]);
     }
 
@@ -491,6 +606,239 @@ class AuthController extends Controller
         }
     }
 
+    /**
+     * Export staff data to Excel with filters.
+     */
+    public function exportStaff(Request $request)
+    {
+        $query = User::with(['department.divisions', 'jobTitle', 'employmentType']);
+
+        // Apply filters
+        if ($request->filled('export_status') && $request->export_status !== 'all') {
+            $query->where('status', $request->export_status);
+        }
+
+        if ($request->filled('entity')) {
+            $entityName = $request->entity;
+            $query->whereHas('department.divisions', function ($q) use ($entityName) {
+                $q->where('name', $entityName);
+            });
+        }
+
+        if ($request->filled('department')) {
+            $query->whereHas('department', function ($q) use ($request) {
+                $q->where('dept_name', $request->department);
+            });
+        }
+
+        if ($request->filled('contract_type')) {
+            $query->whereHas('employmentType', function ($q) use ($request) {
+                $q->where('employment_type', $request->contract_type);
+            });
+        }
+
+        if ($request->filled('expiry_range')) {
+            $today = \Carbon\Carbon::today();
+            $query->where('status', 'active')->whereNotNull('ending_date');
+            switch ($request->expiry_range) {
+                case '30':
+                    $query->whereDate('ending_date', '>=', $today)->whereDate('ending_date', '<=', $today->copy()->addDays(30));
+                    break;
+                case '60':
+                    $query->whereDate('ending_date', '>', $today->copy()->addDays(30))->whereDate('ending_date', '<=', $today->copy()->addDays(60));
+                    break;
+                case '90':
+                    $query->whereDate('ending_date', '>=', $today)->whereDate('ending_date', '<=', $today->copy()->addDays(90));
+                    break;
+            }
+        }
+
+        $users = $query->orderBy('fname')->get();
+
+        // Build spreadsheet
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+
+        // ===== Sheet 1: Summary =====
+        $summary = $spreadsheet->getActiveSheet();
+        $summary->setTitle('Summary');
+
+        $summary->setCellValue('A1', 'CCBRT eDocs — Staff Report');
+        $summary->setCellValue('A2', 'Generated: ' . now()->format('d M Y, H:i'));
+        $summary->mergeCells('A1:D1');
+        $summary->mergeCells('A2:D2');
+        $summary->getStyle('A1')->applyFromArray([
+            'font' => ['bold' => true, 'size' => 14, 'color' => ['rgb' => '007A33']],
+        ]);
+        $summary->getStyle('A2')->applyFromArray([
+            'font' => ['italic' => true, 'size' => 10, 'color' => ['rgb' => '6B7280']],
+        ]);
+
+        // Applied filters
+        $row = 4;
+        $summary->setCellValue("A{$row}", 'Applied Filters');
+        $summary->getStyle("A{$row}")->getFont()->setBold(true)->setSize(11);
+        $row++;
+        $filterList = [];
+        if ($request->filled('export_status') && $request->export_status !== 'all') $filterList[] = 'Status: ' . ucfirst($request->export_status);
+        if ($request->filled('entity')) $filterList[] = 'Entity: ' . $request->entity;
+        if ($request->filled('department')) $filterList[] = 'Department: ' . $request->department;
+        if ($request->filled('contract_type')) $filterList[] = 'Contract Type: ' . $request->contract_type;
+        if ($request->filled('expiry_range')) $filterList[] = 'Expiry Range: ≤ ' . $request->expiry_range . ' days';
+        if (empty($filterList)) $filterList[] = 'None (All Staff)';
+        foreach ($filterList as $f) {
+            $summary->setCellValue("A{$row}", $f);
+            $row++;
+        }
+
+        // Status breakdown
+        $row += 1;
+        $summary->setCellValue("A{$row}", 'Status Breakdown');
+        $summary->getStyle("A{$row}")->getFont()->setBold(true)->setSize(11);
+        $row++;
+        $statusCounts = $users->groupBy('status')->map->count();
+        $headerRow = $row;
+        $summary->setCellValue("A{$row}", 'Status');
+        $summary->setCellValue("B{$row}", 'Count');
+        $summary->setCellValue("C{$row}", '%');
+        $summary->getStyle("A{$row}:C{$row}")->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+            'fill' => ['fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID, 'startColor' => ['rgb' => '007A33']],
+        ]);
+        $row++;
+        $total = $users->count();
+        foreach ($statusCounts as $status => $count) {
+            $summary->setCellValue("A{$row}", ucfirst($status));
+            $summary->setCellValue("B{$row}", $count);
+            $summary->setCellValue("C{$row}", $total > 0 ? round($count / $total * 100, 1) . '%' : '0%');
+            $row++;
+        }
+        $summary->setCellValue("A{$row}", 'Total');
+        $summary->setCellValue("B{$row}", $total);
+        $summary->getStyle("A{$row}:C{$row}")->getFont()->setBold(true);
+
+        // Contract type breakdown
+        $row += 2;
+        $summary->setCellValue("A{$row}", 'Contract Type Breakdown');
+        $summary->getStyle("A{$row}")->getFont()->setBold(true)->setSize(11);
+        $row++;
+        $summary->setCellValue("A{$row}", 'Contract Type');
+        $summary->setCellValue("B{$row}", 'Count');
+        $summary->getStyle("A{$row}:B{$row}")->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+            'fill' => ['fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID, 'startColor' => ['rgb' => '007A33']],
+        ]);
+        $row++;
+        $contractCounts = $users->groupBy(fn($u) => optional($u->employmentType)->employment_type ?? 'Unknown')->map->count()->sortDesc();
+        foreach ($contractCounts as $type => $count) {
+            $summary->setCellValue("A{$row}", $type);
+            $summary->setCellValue("B{$row}", $count);
+            $row++;
+        }
+
+        foreach (['A', 'B', 'C', 'D'] as $col) {
+            $summary->getColumnDimension($col)->setAutoSize(true);
+        }
+
+        // ===== Sheet 2: Detailed Records =====
+        $detail = $spreadsheet->createSheet();
+        $detail->setTitle('Staff Details');
+
+        $headers = ['#', 'Code', 'Full Name', 'Department', 'Entity', 'Job Title', 'Contract Type', 'Contract End', 'Days Left', 'Starting Date', 'Status'];
+        $detail->setCellValue('A1', 'CCBRT eDocs — Staff Details Report');
+        $detail->setCellValue('A2', 'Generated: ' . now()->format('d M Y, H:i') . ' | Records: ' . $total);
+        $detail->mergeCells('A1:K1');
+        $detail->mergeCells('A2:K2');
+        $detail->getStyle('A1')->applyFromArray([
+            'font' => ['bold' => true, 'size' => 14, 'color' => ['rgb' => '007A33']],
+            'alignment' => ['horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER],
+        ]);
+        $detail->getStyle('A2')->applyFromArray([
+            'font' => ['italic' => true, 'size' => 10, 'color' => ['rgb' => '6B7280']],
+            'alignment' => ['horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER],
+        ]);
+
+        $headerRow = 3;
+        foreach ($headers as $i => $h) {
+            $col = chr(65 + $i);
+            $detail->setCellValue("{$col}{$headerRow}", $h);
+        }
+        $detail->getStyle("A{$headerRow}:K{$headerRow}")->applyFromArray([
+            'font' => ['bold' => true, 'size' => 11, 'color' => ['rgb' => 'FFFFFF']],
+            'fill' => ['fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID, 'startColor' => ['rgb' => '007A33']],
+            'alignment' => ['horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER],
+        ]);
+
+        $row = 4;
+        $today = \Carbon\Carbon::today();
+        foreach ($users as $i => $user) {
+            $endDate = $user->ending_date ? \Carbon\Carbon::parse($user->ending_date) : null;
+            $daysLeft = $endDate ? (int) $today->diffInDays($endDate, false) : null;
+            $entity = optional($user->department)->divisions->first()->name ?? '—';
+
+            $daysLabel = '—';
+            if ($daysLeft !== null && $user->status === 'active') {
+                if ($daysLeft <= 0) {
+                    $daysLabel = 'Expired';
+                } else {
+                    $months = intdiv($daysLeft, 30);
+                    $remainDays = $daysLeft % 30;
+                    if ($daysLeft < 30) {
+                        $daysLabel = $daysLeft . ' days';
+                    } elseif ($remainDays == 0) {
+                        $daysLabel = $months . ' month' . ($months > 1 ? 's' : '');
+                    } else {
+                        $daysLabel = $months . ' month' . ($months > 1 ? 's' : '') . ', ' . $remainDays . ' day' . ($remainDays > 1 ? 's' : '');
+                    }
+                }
+            }
+
+            $detail->setCellValue("A{$row}", $i + 1);
+            $detail->setCellValue("B{$row}", $user->ccbrt_code ?? '—');
+            $detail->setCellValue("C{$row}", trim($user->fname . ' ' . $user->lname));
+            $detail->setCellValue("D{$row}", optional($user->department)->dept_name ?? '—');
+            $detail->setCellValue("E{$row}", $entity);
+            $detail->setCellValue("F{$row}", optional($user->jobTitle)->job_title ?? '—');
+            $detail->setCellValue("G{$row}", optional($user->employmentType)->employment_type ?? '—');
+            $detail->setCellValue("H{$row}", $endDate ? $endDate->format('d M Y') : '—');
+            $detail->setCellValue("I{$row}", $daysLabel);
+            $detail->setCellValue("J{$row}", $user->starting_date ? \Carbon\Carbon::parse($user->starting_date)->format('d M Y') : '—');
+            $detail->setCellValue("K{$row}", ucfirst($user->status ?? '—'));
+
+            // Alternating row colors
+            if ($row % 2 === 0) {
+                $detail->getStyle("A{$row}:K{$row}")->applyFromArray([
+                    'fill' => ['fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID, 'startColor' => ['rgb' => 'F9FAFB']],
+                ]);
+            }
+            $row++;
+        }
+
+        // Borders
+        $lastRow = $row - 1;
+        if ($lastRow >= $headerRow) {
+            $detail->getStyle("A{$headerRow}:K{$lastRow}")->applyFromArray([
+                'borders' => ['allBorders' => ['borderStyle' => \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN, 'color' => ['rgb' => 'D1D5DB']]],
+            ]);
+        }
+
+        foreach (range('A', 'K') as $col) {
+            $detail->getColumnDimension($col)->setAutoSize(true);
+        }
+
+        // Output
+        $filename = 'Staff_Report_' . now()->format('Y-m-d_His') . '.xlsx';
+        $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+
+        $headers = [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Cache-Control' => 'max-age=0',
+        ];
+
+        return response()->streamDownload(function () use ($writer) {
+            $writer->save('php://output');
+        }, $filename, $headers);
+    }
+
 
     // public function userDetail()
     // {
@@ -518,21 +866,28 @@ class AuthController extends Controller
 
     public function handleLogin(Request $request)
     {
+        $wantsJson = $request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest';
+
         $validator = Validator::make($request->all(), [
             'username' => 'required',
             'password' => 'required'
         ]);
 
         if ($validator->fails()) {
+            if ($wantsJson) {
+                return response()->json(['message' => 'Validation failed.', 'errors' => $validator->errors()->toArray()], 422);
+            }
             return redirect()->back()->withErrors($validator)->withInput();
         }
 
-        $username = $request->input('username');
+        // Accept either username OR email in the same input field
+        $login = trim((string) $request->input('username'));
+        $loginField = filter_var($login, FILTER_VALIDATE_EMAIL) ? 'email' : 'username';
         $ipAddress = $request->ip();
         $userAgent = $request->userAgent();
 
         // Check if user exists and is locked
-        $user = User::where('username', $username)->first();
+        $user = User::where($loginField, $login)->first();
 
         if ($user && $user->is_locked && $user->locked_until) {
             if (Carbon::now()->lt($user->locked_until)) {
@@ -546,7 +901,7 @@ class AuthController extends Controller
 
                 // Log the locked attempt
                 FailedLoginAttempt::create([
-                    'username' => $username,
+                    'username' => $login,
                     'email' => $user->email,
                     'ip_address' => $ipAddress,
                     'user_agent' => $userAgent,
@@ -555,8 +910,12 @@ class AuthController extends Controller
                     'failure_reason' => 'Account is locked',
                 ]);
 
+                $lockMessage = "Your account has been locked due to multiple failed login attempts. Please try again after {$timeMessage}.";
+                if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                    return response()->json(['message' => $lockMessage], 423);
+                }
                 return redirect()->back()
-                    ->withErrors(['login_error' => "Your account has been locked due to multiple failed login attempts. Please try again after {$timeMessage}."])
+                    ->withErrors(['login_error' => $lockMessage])
                     ->withInput();
             } else {
                 // Lock period expired, reset failed attempts
@@ -567,8 +926,8 @@ class AuthController extends Controller
             }
         }
 
-        // Attempt to authenticate using the provided username and password
-        if (Auth::attempt(['username' => $username, 'password' => $request->input('password')])) {
+        // Attempt to authenticate using username OR email and password
+        if (Auth::attempt([$loginField => $login, 'password' => $request->input('password')])) {
             $user = Auth::user();
 
             // Reset failed login attempts on successful login
@@ -582,7 +941,7 @@ class AuthController extends Controller
 
             // Log successful login attempt
             FailedLoginAttempt::create([
-                'username' => $username,
+                'username' => $login,
                 'email' => $user->email,
                 'ip_address' => $ipAddress,
                 'user_agent' => $userAgent,
@@ -595,6 +954,9 @@ class AuthController extends Controller
             if (\App\Http\Controllers\SettingsController::getMaintenanceModeStatus()) {
                 if (!$user->can('manage maintenance mode')) {
                     Auth::logout();
+                    if ($wantsJson) {
+                        return response()->json(['message' => 'The system is currently under maintenance. Please try again shortly.'], 503);
+                    }
                     return redirect()->back()
                         ->with('error', 'The system is currently under maintenance. Please try again shortly.');
                 }
@@ -602,6 +964,9 @@ class AuthController extends Controller
 
             if ($user->status === 'deactivated') {
                 Auth::logout();
+                if ($wantsJson) {
+                    return response()->json(['message' => 'Your account has been deactivated. Please contact support for assistance.'], 403);
+                }
                 return redirect()->back()
                     ->with('error', 'Your account has been deactivated. Please contact support for assistance.');
             }
@@ -650,6 +1015,9 @@ class AuthController extends Controller
             elseif ($user->status == 'pending') {
                 // Handle session limiting for pending users too
                 $this->manageUserSessions($user, $request);
+                if ($wantsJson) {
+                    return response()->json(['redirect' => route('review-dashboard')]);
+                }
                 return redirect()->route('review-dashboard')->with('info', 'Your account is pending approval, please wait.');
             } elseif ($user->status == 'active') {
                 // Handle session limiting (max 2 concurrent sessions)
@@ -659,11 +1027,12 @@ class AuthController extends Controller
                 $intendedUrl = session('url.intended', route('dashboard'));
                 session()->forget('url.intended');
 
-                // Store success message and redirect URL in session
-                session()->flash('login_success', true);
-                session()->flash('redirect_url', $intendedUrl);
-
-                return redirect()->route('login');
+                // Redirect directly to dashboard/intended URL so login works reliably on all
+                // browsers and computers (no dependency on session surviving an extra redirect).
+                if ($wantsJson) {
+                    return response()->json(['redirect' => $intendedUrl]);
+                }
+                return redirect()->to($intendedUrl);
             }
         } else {
             // Failed login attempt
@@ -706,7 +1075,7 @@ class AuthController extends Controller
 
             // Log failed login attempt
             FailedLoginAttempt::create([
-                'username' => $username,
+                'username' => $login,
                 'email' => $user ? $user->email : null,
                 'ip_address' => $ipAddress,
                 'user_agent' => $userAgent,
@@ -730,8 +1099,14 @@ class AuthController extends Controller
             } elseif ($user && $failedAttempts >= 2) {
                 $remainingAttempts = 3 - $failedAttempts;
                 $errorMessage = "Invalid username or password. {$remainingAttempts} attempt(s) remaining before account lock.";
+            } elseif ($user && $user->status === 'inactive' && empty($user->signature)) {
+                // User exists but password didn't match and registration is incomplete (e.g. stopped at signature step)
+                $errorMessage = 'We found your account but the password did not match. If you did not complete registration (e.g. the signature step), please use "Forgot password" below to set a new password, then log in to complete your registration.';
             }
 
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json(['message' => $errorMessage], 401);
+            }
             return redirect()->back()->withErrors(['login_error' => $errorMessage])->withInput();
         }
     }
@@ -2283,7 +2658,10 @@ class AuthController extends Controller
 
     public function register()
     {
-        $policies = Policy::all();
+        // Show all HR policies (policies table) - no filtering
+        $policies = Policy::where('status', 'active')
+            ->orderBy('created_at', 'desc')
+            ->get();
         $departments = Departments::orderBy('dept_name', 'asc')->get();
 
         $employmentTypes = EmploymentTypes::all()->sortBy('employment_type');
@@ -2538,14 +2916,24 @@ class AuthController extends Controller
     //Function shows edit user form
     public function showEditForm($id)
     {
-        $user = User::with('department', 'jobTitle')->findOrFail($id);
+        $user = User::with('department', 'jobTitle', 'assignedEntity', 'assignedEntities')->findOrFail($id);
         $currentUser = Auth::user();
 
         // Get all roles (always include super-admin so it can be shown as disabled if needed)
         $roles = Role::get();
 
         $userRoles = $user->roles->pluck('name')->toArray(); // Get user roles
-        return view('role-permission/user.edit', compact('user', 'roles', 'userRoles'));
+
+        // Get divisions/entities for finance officer assignment
+        $divisions = \App\Models\Division::where(function($q) {
+            $q->where('delete_status', '!=', '1')->orWhereNull('delete_status');
+        })->orderBy('name')->get();
+        if ($divisions->isEmpty()) {
+            // Fallback: if filtering returns nothing, show all divisions so assignment is still possible.
+            $divisions = \App\Models\Division::orderBy('name')->get();
+        }
+
+        return view('role-permission/user.edit', compact('user', 'roles', 'userRoles', 'divisions'));
     }
 
     public function checkEmail(Request $request)
@@ -2561,12 +2949,25 @@ class AuthController extends Controller
         $request->validate([
             'roles' => 'required|array',
             'roles.*' => 'required|exists:roles,name',
+            'assigned_entity_ids' => 'nullable|array',
+            'assigned_entity_ids.*' => 'nullable|exists:divisions,id',
         ]);
 
         $user = User::findOrFail($userId);
         $currentUser = Auth::user();
         $oldRoles = $user->roles->pluck('name')->toArray();
         $newRoles = $request->roles;
+        $assignedEntityIds = collect($request->input('assigned_entity_ids', []))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        // If an entity is selected, enforce finance officer role automatically.
+        if (!empty($assignedEntityIds) && !collect($newRoles)->contains(fn ($role) => strtolower((string) $role) === 'finance officer')) {
+            $newRoles[] = 'finance officer';
+        }
 
         // Check if super-admin role is being added or removed
         $hadSuperAdmin = in_array('super-admin', $oldRoles);
@@ -2610,12 +3011,119 @@ class AuthController extends Controller
         try {
             $user->syncRoles($newRoles);
 
+            // Handle finance officer entity assignment
+            $hasFinanceRole = collect($newRoles)->contains(function ($role) {
+                return strtolower($role) === 'finance officer';
+            });
+
+            if ($hasFinanceRole) {
+                // Enforce one finance officer per entity.
+                $pivotConflictEntityIds = \Illuminate\Support\Facades\DB::table('user_assigned_entities')
+                    ->whereIn('division_id', $assignedEntityIds)
+                    ->where('user_id', '!=', $user->id)
+                    ->pluck('division_id')
+                    ->map(fn ($id) => (int) $id)
+                    ->all();
+
+                $legacyConflictEntityIds = User::where('id', '!=', $user->id)
+                    ->whereNotNull('assigned_entity_id')
+                    ->whereIn('assigned_entity_id', $assignedEntityIds)
+                    ->whereHas('roles', function ($query) {
+                        $query->where('name', 'finance officer')
+                            ->orWhere('name', 'like', 'finance-officer-%');
+                    })
+                    ->pluck('assigned_entity_id')
+                    ->map(fn ($id) => (int) $id)
+                    ->all();
+
+                $conflictEntityIds = collect(array_merge($pivotConflictEntityIds, $legacyConflictEntityIds))
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                if (!empty($conflictEntityIds)) {
+                    $conflictEntityNames = \App\Models\Division::whereIn('id', $conflictEntityIds)
+                        ->pluck('name')
+                        ->filter()
+                        ->implode(', ');
+
+                    return redirect()->back()->withInput()->with(
+                        'error',
+                        'Each entity can only have one finance officer. These entities are already assigned: ' . $conflictEntityNames
+                    );
+                }
+
+                $user->assignedEntities()->sync($assignedEntityIds);
+                // Keep legacy single-entity column populated with first selected entity for compatibility.
+                $user->assigned_entity_id = !empty($assignedEntityIds) ? $assignedEntityIds[0] : null;
+            } elseif (!$hasFinanceRole) {
+                $user->assignedEntities()->sync([]);
+                $user->assigned_entity_id = null;
+            }
+            $user->save();
+
             return redirect('users')->with('success', 'Role assigned successfully');
         } catch (\Exception $e) {
             return redirect()->back()->with('error', 'Failed to assign role: ' . $e->getMessage());
         }
     }
 
+    /**
+     * Get user permissions view for modal
+     */
+    public function getUserPermissions($id)
+    {
+        $user = User::with('roles.permissions', 'permissions')->findOrFail($id);
+        $allPermissions = \Spatie\Permission\Models\Permission::orderBy('name')->get();
+        $userRoles = $user->roles;
+        $userDirectPermissions = $user->permissions->pluck('name')->toArray();
+        
+        // Group permissions by role
+        $permissionsByRole = [];
+        foreach ($userRoles as $role) {
+            $permissionsByRole[$role->name] = $role->permissions->pluck('name')->toArray();
+        }
+        
+        $html = view('role-permission.user.permissions-modal', compact('user', 'allPermissions', 'userRoles', 'userDirectPermissions', 'permissionsByRole'))->render();
+        return response($html);
+    }
+
+    /**
+     * Update user permissions
+     */
+    public function updateUserPermissions(Request $request, $id)
+    {
+        $user = User::findOrFail($id);
+        
+        $request->validate([
+            'permissions' => 'required|array',
+            'permissions.*.permission' => 'required|string|exists:permissions,name',
+            'permissions.*.role' => 'nullable|string|exists:roles,name',
+        ]);
+
+        try {
+            DB::beginTransaction();
+            
+            // Get all selected permissions
+            $selectedPermissions = collect($request->permissions)->pluck('permission')->unique()->toArray();
+            
+            // Sync direct permissions to user (these override role permissions)
+            $user->syncPermissions($selectedPermissions);
+            
+            DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'User permissions updated successfully.'
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update permissions: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 
     public function assignPlatformAndUnits(Request $request, $id)
     {
@@ -2649,7 +3157,7 @@ class AuthController extends Controller
     public function showAssignRoleForm($userId)
     {
         $user = User::findOrFail($userId);
-        $roles = Role::all();
+        $roles = Role::where('name', 'not like', 'finance-officer-%')->get();
         return view('user.assign-role', compact('user', 'roles'));
     }
 
@@ -2713,6 +3221,36 @@ class AuthController extends Controller
         Session::flush();
 
         return redirect()->route('login');
+    }
+
+    /**
+     * Switch active role (view-as filter). Only allows roles the user actually has.
+     * Does not change the user's assigned roles in the database.
+     */
+    public function switchRole(Request $request)
+    {
+        $request->validate(['role' => 'required|string|max:255']);
+        $roleName = $request->input('role');
+        $user = Auth::user();
+        $userRoleNames = $user->getRoleNames();
+        if ($userRoleNames->isEmpty()) {
+            return redirect()->back()->with('error', 'You have no roles assigned.');
+        }
+        $normalized = $userRoleNames->map(fn ($n) => (string) $n);
+        if (!$normalized->contains($roleName)) {
+            return redirect()->back()->with('error', 'You do not have that role.');
+        }
+        Session::put(User::ACTIVE_ROLE_SESSION_KEY, $roleName);
+        return redirect()->back()->with('success', 'Viewing as ' . $roleName . '.');
+    }
+
+    /**
+     * Clear active role so the user sees content for all their roles again.
+     */
+    public function clearActiveRole()
+    {
+        Session::forget(User::ACTIVE_ROLE_SESSION_KEY);
+        return redirect()->back()->with('success', 'Viewing all roles.');
     }
 
     /**
@@ -2888,31 +3426,39 @@ class AuthController extends Controller
 
     public function forgetPassChange(Request $request)
     {
-        $this->validate($request, [
+        $request->validate([
             'email' => 'required|email|exists:users,email',
+        ], [
+            'email.required' => 'Please enter your email address.',
+            'email.email' => 'Please enter a valid email address.',
+            'email.exists' => 'We could not find an account with that email address. Please check the email or contact support.',
         ]);
 
         try {
             $res = Password::sendResetLink($request->only('email'));
-            return $res === Password::RESET_LINK_SENT
-                ? back()->with('status', trans($res)) : back()
-                ->withErrors(['email' => trans($res)]);
+            if ($res === Password::RESET_LINK_SENT) {
+                return back()->with('status', 'If that email is registered, we have sent you a password reset link. Please check your inbox (and spam folder).');
+            }
+            return back()->withErrors(['email' => trans($res)]);
         } catch (TransportException $e) {
             \Log::error('Mail transport error: ' . $e->getMessage());
             return back()->withErrors([
                 'email' => 'Unable to send password reset email. Please check your email configuration or contact the administrator.'
-            ]);
+            ])->withInput();
         } catch (\Exception $e) {
             \Log::error('Password reset error: ' . $e->getMessage());
             return back()->withErrors([
                 'email' => 'An error occurred while sending the password reset email. Please try again later or contact support.'
-            ]);
+            ])->withInput();
         }
     }
 
-    public function showResetPasswordForm($token)
+    public function showResetPasswordForm(Request $request, $token)
     {
-        return view('auth.reset', ['token' => $token]);
+        return view('auth.reset', [
+            'token' => $token,
+            'email' => $request->query('email'),
+        ]);
     }
 
     public function resetPassword(Request $request)
@@ -2921,20 +3467,33 @@ class AuthController extends Controller
             'email' => 'required|email|exists:users,email',
             'password' => 'required|confirmed|min:6',
             'token' => 'required',
+        ], [
+            'email.required' => 'Please enter your email address.',
+            'email.email' => 'Please enter a valid email address.',
+            'email.exists' => 'We could not find an account with that email address.',
+            'password.required' => 'Please enter a new password.',
+            'password.confirmed' => 'The password confirmation does not match.',
+            'password.min' => 'The password must be at least 6 characters.',
+            'token.required' => 'Invalid or expired reset link. Please request a new password reset.',
         ]);
-        //Attempt to reset password
+
         $res = Password::reset(
             $request->only('email', 'password', 'password_confirmation', 'token'),
             function ($user, $password) {
-                $user->password = bcrypt($password);
+                $user->password = Hash::make($password);
                 $user->save();
             }
         );
 
-        // Check the response and return appropriate message
-        return $res === Password::PASSWORD_RESET
-            ? redirect()->route('login')->with('status', trans($res))
-            : back()->withErrors(['email' => trans($res)]);
+        if ($res === Password::PASSWORD_RESET) {
+            return redirect()->route('login')->with('status', 'Your password has been reset. You can now log in with your new password.');
+        }
+
+        $message = trans($res);
+        if ($res === Password::INVALID_TOKEN) {
+            $message = 'This password reset link has expired or is invalid. Please request a new one from the Forgot password page.';
+        }
+        return back()->withErrors(['email' => $message])->withInput($request->only('email'));
     }
 
     public function showForgetPasswordForm()
@@ -2968,6 +3527,11 @@ class AuthController extends Controller
 
     public function adminChangeUserPassword(Request $request, $userId)
     {
+        $actor = Auth::user();
+        if (!$actor || !$actor->hasAnyRole(['super-admin', 'it'])) {
+            return redirect()->back()->with('error', 'Only super-admin or IT can manually reset user passwords.');
+        }
+
         // Validate the request
         $request->validate([
             'password' => 'required|min:6', // Ensure password meets minimum requirements
@@ -2975,6 +3539,9 @@ class AuthController extends Controller
 
         // Find the user
         $user = User::findOrFail($userId);
+        if ($user->hasRole('super-admin')) {
+            return redirect()->back()->with('error', 'Super-admin password cannot be changed from this action.');
+        }
 
         // Update the user's password
         $user->password = Hash::make($request->password);
@@ -2988,13 +3555,15 @@ class AuthController extends Controller
     public function editUserDetails($id)
     {
         $user = User::with('department', 'jobTitle')->findOrFail($id);
+        $staffContract = Contract::with('contractTemplate')->where('user_id', $id)->latest('id')->first();
+        $contractTemplates = ContractTemplate::orderBy('name')->get();
         $departments = Departments::all();
         $jobTitles = $user->department ? JobTitle::where('deptId', $user->department->id)->get() : collect();
         $hec_title = JobTitle::where('deptId', 45)->get();
         $employmentTypes = EmploymentTypes::all();
         $healthDetails = HealthDetails::where('userId', $id)->first();
         $languageKnowledge = LanguageKnowledge::where('userId', $id)->get();
-        return view('employees_details.edituser', compact('user', 'departments', 'jobTitles', 'hec_title', 'employmentTypes', 'healthDetails', 'languageKnowledge'));
+        return view('employees_details.edituser', compact('user', 'staffContract', 'contractTemplates', 'departments', 'jobTitles', 'hec_title', 'employmentTypes', 'healthDetails', 'languageKnowledge'));
     }
 
     public function getJobTitless($departmentId)
@@ -3008,8 +3577,10 @@ class AuthController extends Controller
 
     public function updateUserDetails(Request $request, $id)
     {
+        $educationLevels = ['primary', 'o_level', 'a_level', 'certificate', 'diploma', 'degree', 'masters', 'phd'];
+
         // Validate incoming request
-        $validatedData = $request->validate([
+        $validationRules = [
             'fname' => 'required|string|max:255',
             'mname' => 'nullable|string|max:255',
             'lname' => 'required|string|max:255',
@@ -3040,6 +3611,12 @@ class AuthController extends Controller
             'popular_landmark' => 'nullable|string|max:255',
             'employee_cv' => 'nullable|file|mimes:pdf,doc,docx|max:2048',
             'profile_picture' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
+            'contract' => 'nullable|array',
+            'contract.start_date' => 'nullable|date',
+            'contract.end_date' => 'nullable|date|after_or_equal:contract.start_date',
+            'contract.duration' => 'nullable|string|max:255',
+            'contract.probation_period' => 'nullable|string|max:255',
+            'contract.status' => 'nullable|string|max:100',
             'domicile' => 'nullable|string|max:255',
             'starting_date' => 'nullable|date',
             'ending_date' => 'nullable|date',
@@ -3062,12 +3639,29 @@ class AuthController extends Controller
             'illness_history' => 'nullable|string',
             'allergies' => 'nullable|string',
             'languages' => 'nullable|array',
-            'languages.*.language' => 'required|string|max:100',
-            'languages.*.speaking' => 'required|string|in:Excellent,Good,Fair,Poor',
-            'languages.*.reading' => 'required|string|in:Excellent,Good,Fair,Poor',
-            'languages.*.writing' => 'required|string|in:Excellent,Good,Fair,Poor',
+            'languages.*.language' => 'nullable|string|max:100',
+            'languages.*.speaking' => 'nullable|string|in:Excellent,Good,Fair,Poor',
+            'languages.*.reading' => 'nullable|string|in:Excellent,Good,Fair,Poor',
+            'languages.*.writing' => 'nullable|string|in:Excellent,Good,Fair,Poor',
             'signature' => 'nullable|string|max:50000',
-        ]);
+        ];
+
+        foreach ($educationLevels as $level) {
+            $validationRules["{$level}_institution"] = 'nullable|string|max:255';
+            $validationRules["{$level}_country"] = 'nullable|string|max:100';
+            $validationRules["{$level}_start_year"] = 'nullable|integer|min:1900|max:' . date('Y');
+            $validationRules["{$level}_completion_year"] = 'nullable|integer|min:1900|max:' . date('Y');
+            $validationRules["{$level}_certificate"] = 'nullable|file|mimes:pdf|max:2048';
+
+            if (in_array($level, ['certificate', 'diploma', 'degree', 'masters', 'phd'])) {
+                $validationRules["{$level}_transcript"] = 'nullable|file|mimes:pdf|max:2048';
+            }
+        }
+
+        $validatedData = $request->validate($validationRules);
+
+        try {
+            DB::beginTransaction();
 
         // Get user details
         $user = User::findOrFail($id);
@@ -3143,6 +3737,27 @@ class AuthController extends Controller
             'court_details' => $request->input('court_details'),
         ];
 
+        foreach ($educationLevels as $level) {
+            $updateData["{$level}_institution"] = $request->input("{$level}_institution");
+            $updateData["{$level}_country"] = $request->input("{$level}_country");
+            $updateData["{$level}_start_year"] = $request->input("{$level}_start_year");
+            $updateData["{$level}_completion_year"] = $request->input("{$level}_completion_year");
+
+            if ($request->hasFile("{$level}_certificate")) {
+                if ($user->{"{$level}_certificate"}) {
+                    Storage::disk('public')->delete($user->{"{$level}_certificate"});
+                }
+                $updateData["{$level}_certificate"] = $request->file("{$level}_certificate")->store("certificates/{$user->id}", 'public');
+            }
+
+            if (in_array($level, ['certificate', 'diploma', 'degree', 'masters', 'phd']) && $request->hasFile("{$level}_transcript")) {
+                if ($user->{"{$level}_transcript"}) {
+                    Storage::disk('public')->delete($user->{"{$level}_transcript"});
+                }
+                $updateData["{$level}_transcript"] = $request->file("{$level}_transcript")->store("transcripts/{$user->id}", 'public');
+            }
+        }
+
         // Add signature to update data if provided
         if ($signatureDataToSave !== null) {
             $updateData['signature'] = $signatureDataToSave;
@@ -3154,49 +3769,103 @@ class AuthController extends Controller
         // Save user (in case signature was set directly)
         $user->save();
 
+        $contractData = array_filter($request->input('contract', []), fn($value) => $value !== null && $value !== '');
+        if (!empty($contractData)) {
+            if (!empty($contractData['start_date']) && !empty($contractData['end_date'])) {
+                $startDate = Carbon::parse($contractData['start_date'])->startOfDay();
+                $endDate = Carbon::parse($contractData['end_date'])->startOfDay();
+
+                if ($endDate->greaterThanOrEqualTo($startDate)) {
+                    $totalMonths = $startDate->diffInMonths($endDate);
+                    $remainingDays = $startDate->copy()->addMonths($totalMonths)->diffInDays($endDate);
+                    $years = intdiv($totalMonths, 12);
+                    $months = $totalMonths % 12;
+                    $durationParts = [];
+
+                    if ($years > 0) {
+                        $durationParts[] = $years . ' ' . Str::plural('year', $years);
+                    }
+
+                    if ($months > 0) {
+                        $durationParts[] = $months . ' ' . Str::plural('month', $months);
+                    }
+
+                    if ($remainingDays > 0 || empty($durationParts)) {
+                        $durationParts[] = $remainingDays . ' ' . Str::plural('day', $remainingDays);
+                    }
+
+                    $contractData['duration'] = implode(' ', $durationParts);
+                }
+            }
+
+            $existingContract = Contract::where('user_id', $user->id)->latest('id')->first();
+
+            if ($existingContract) {
+                $existingContract->update($contractData);
+            } elseif (!empty($contractData['start_date']) && !empty($contractData['end_date'])) {
+                $contractTemplateId = ContractTemplate::orderBy('id')->value('id')
+                    ?: ContractTemplate::create([
+                        'name' => 'Staff Profile Contract',
+                        'type' => 'Staff profile contract',
+                        'content' => 'Staff profile contract details maintained from the HR staff profile.',
+                    ])->id;
+
+                if ($contractTemplateId) {
+                    Contract::create(array_merge([
+                        'contract_template_id' => $contractTemplateId,
+                        'user_id' => $user->id,
+                    ], $contractData));
+                }
+            }
+        }
+
         // Update or create health details
         $healthDetails = HealthDetails::where('userId', $id)->first();
         if ($healthDetails) {
             $healthDetails->update([
-                'physical_disability' => $request->input('physical_disability', 'None'),
+                'physical_disability' => $request->input('physical_disability') ?? $healthDetails->physical_disability ?? 'None',
                 'blood_group' => $request->input('blood_group'),
-                'health_insurance' => $request->input('health_insurance'),
+                'health_insurance' => $request->input('health_insurance') ?? $healthDetails->health_insurance ?? 'No',
                 'insur_name' => $request->input('insur_name'),
                 'insur_no' => $request->input('insur_no'),
-                'illness_history' => $request->input('illness_history', 'None'),
-                'allergies' => $request->input('allergies', 'None'),
+                'illness_history' => $request->input('illness_history') ?? 'None',
+                'allergies' => $request->input('allergies') ?? 'None',
             ]);
         } else {
             HealthDetails::create([
                 'userId' => $id,
-                'physical_disability' => $request->input('physical_disability', 'None'),
+                'physical_disability' => $request->input('physical_disability') ?? 'None',
                 'blood_group' => $request->input('blood_group'),
-                'health_insurance' => $request->input('health_insurance', 'No'),
+                'health_insurance' => $request->input('health_insurance') ?? 'No',
                 'insur_name' => $request->input('insur_name'),
                 'insur_no' => $request->input('insur_no'),
-                'illness_history' => $request->input('illness_history', 'None'),
-                'allergies' => $request->input('allergies', 'None'),
+                'illness_history' => $request->input('illness_history') ?? 'None',
+                'allergies' => $request->input('allergies') ?? 'None',
                 'delete_status' => 0,
             ]);
         }
 
         // Update language knowledge
-        if ($request->has('languages')) {
+        $languageRows = collect($request->input('languages', []))
+            ->filter(fn ($langData) => !empty($langData['language']))
+            ->values();
+
+        if ($languageRows->isNotEmpty()) {
             $existingLanguageIds = [];
-            foreach ($request->input('languages') as $langData) {
+            foreach ($languageRows as $langData) {
                 if (isset($langData['id'])) {
                     // Update existing
                     $language = LanguageKnowledge::find($langData['id']);
                     if ($language && $language->userId == $id) {
                         $language->update([
                             'language' => $langData['language'],
-                            'speaking' => $langData['speaking'],
-                            'reading' => $langData['reading'],
-                            'writing' => $langData['writing'],
+                            'speaking' => $langData['speaking'] ?? $language->speaking,
+                            'reading' => $langData['reading'] ?? $language->reading,
+                            'writing' => $langData['writing'] ?? $language->writing,
                         ]);
                         $existingLanguageIds[] = $langData['id'];
                     }
-                } else {
+                } elseif (!empty($langData['speaking']) && !empty($langData['reading']) && !empty($langData['writing'])) {
                     // Create new
                     $newLang = LanguageKnowledge::create([
                         'userId' => $id,
@@ -3215,9 +3884,54 @@ class AuthController extends Controller
                 ->delete();
         }
 
+        DB::commit();
+
         Alert::success('User details updated', 'Update successful');
 
         return redirect()->route('employee.index')->with('success', 'User details updated successfully.');
+        } catch (QueryException $exception) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error('Staff details update database error', [
+                'user_id' => $id,
+                'message' => $exception->getMessage(),
+            ]);
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => 'Some staff details could not be saved. Please review the form and try again.',
+                ], 422);
+            }
+
+            Alert::error('Update failed', 'Some staff details could not be saved. Please review the form and try again.');
+
+            return back()
+                ->withInput()
+                ->withErrors(['staff_update' => 'Some staff details could not be saved. Please review the form and try again.']);
+        } catch (\Throwable $exception) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error('Staff details update error', [
+                'user_id' => $id,
+                'message' => $exception->getMessage(),
+            ]);
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => 'An unexpected error occurred while saving staff details. Please try again.',
+                ], 500);
+            }
+
+            Alert::error('Update failed', 'An unexpected error occurred while saving staff details. Please try again.');
+
+            return back()
+                ->withInput()
+                ->withErrors(['staff_update' => 'An unexpected error occurred while saving staff details. Please try again.']);
+        }
     }
 
 
@@ -3246,47 +3960,6 @@ class AuthController extends Controller
 
     //     return redirect()->route('employee.index')->with('success', 'User details updated successfully.');
     // }
-
-
-    public function viewForms($id)
-    {
-        $user = User::where('id', $id)->where('status', 'active')->firstOrFail();
-
-        $userForms = collect([
-            (object)[
-                'name' => 'HR Form',
-                'file_url' => route('download-hr-form', ['id' => $user->id]),
-                'created_at' => now(),
-            ],
-            (object)[
-                'name' => 'Bank Details Form',
-                'file_url' => route('download-bank-form', ['id' => $user->id]),
-                'created_at' => now(),
-            ],
-            (object)[
-                'name' => 'NHIF Form',
-                'file_url' => route('download-nhif-form', ['id' => $user->id]),
-                'created_at' => now(),
-            ],
-            (object)[
-                'name' => 'HSLB Form',
-                'file_url' => route('download-hslb-form', ['id' => $user->id]),
-                'created_at' => now(),
-            ],
-            (object)[
-                'name' => 'ICT Access Form',
-                'file_url' => route('download-it-form', ['id' => $user->id]),
-                'created_at' => now()->subDay(),
-            ],
-            (object)[
-                'name' => 'Exit Clearance Form ',
-                'file_url' => route('download-exit-form', ['id' => $user->id]),
-                'created_at' => now()->subDays(2),
-            ],
-        ]);
-
-        return view('employees_details.forms', compact('userForms', 'user'));
-    }
 
 
     public function downloadHrForm($id)
@@ -3611,7 +4284,8 @@ class AuthController extends Controller
 
 
         $financeOfficer = User::whereHas('roles', function ($query) {
-            $query->where('name', 'finance officer');
+            $query->where('name', 'finance officer')
+                ->orWhere('name', 'like', 'finance-officer-%');
         })
             ->where('users.deptId', $clearance->deptId)
             ->join('clearance_work_flow_histories', 'clearance_work_flow_histories.who_approve', '=', 'users.id')
@@ -3795,5 +4469,26 @@ class AuthController extends Controller
 
 
         return redirect()->back()->with('success', 'User has been activated successfully.');
+    }
+
+    public function updateOnCallRates(Request $request, $id)
+    {
+        // Check if user has permission
+        if (!Auth::user()->hasAnyRole(['hr', 'super-admin', 'admin'])) {
+            return redirect()->back()->with('error', 'You do not have permission to perform this action.');
+        }
+
+        $user = User::findOrFail($id);
+
+        // Validate the request
+        $validated = $request->validate([
+            'oncall_rates' => 'nullable|array',
+            'oncall_rates.*' => 'exists:on_call_rates,id',
+        ]);
+
+        // Sync the assigned rates
+        $user->onCallRates()->sync($validated['oncall_rates'] ?? []);
+
+        return redirect()->back()->with('success', 'On-call rates updated successfully.');
     }
 }

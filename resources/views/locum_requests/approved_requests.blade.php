@@ -52,6 +52,16 @@
                 </div>
             </div>
 
+            {{-- Report navigation bars --}}
+            <div class="d-flex flex-wrap gap-2 mb-4">
+                <a href="{{ route('oncall_requests.approved') }}" class="btn btn-outline-secondary btn-sm">
+                    <i class="fas fa-phone-alt me-1"></i> On-Call Report
+                </a>
+                <a href="{{ url()->current() }}" class="btn btn-success btn-sm">
+                    <i class="fas fa-user-md me-1"></i> Locum Report
+                </a>
+            </div>
+
             <div class="card card-body">
 
                 {{-- Filters (single row) --}}

@@ -1,244 +1,374 @@
-@extends('layouts.template2')
+@extends('layouts.template')
 @include('includes.loader')
 
 @section('breadcrumb')
-    <br>
-    <br>
-    <br>
-    <br>
-    <div class="content container-fluid" style="background-color: #ffffff; max-width:1000px; margin: auto;">
-        <br>
-        <style>
-            @media (max-width: 768px) {
-                .fw-bold {
-                    font-size: 1.5rem !important;
-                }
-            }
+    <style>
+        @media print {
+            .header, .sidebar, .footer, .fixed-bottom,
+            .page-header, .page-sub-header,
+            .btn, button, .button-group,
+            #loader, .loader, .swal2-container,
+            nav, .navbar, .no-print { display: none !important; }
 
-            body {
-                font-family: Arial, sans-serif;
+            body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+            .main-wrapper, .content-wrapper {
+                margin: 0 !important; padding: 0 !important;
+                width: 100% !important; float: none !important;
             }
-
-            .container {
-                width: 90%;
-                max-width: 800px;
-                margin: auto;
+            .page-wrapper { padding: 0 !important; margin: 0 !important; }
+            .content.container-fluid {
+                padding: 0 !important; margin: 0 !important;
+                max-width: 100% !important; width: 100% !important;
             }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            @page { size: A4 portrait; margin: 10mm; }
+            .card { box-shadow: none !important; border: 1px solid #dee2e6 !important; page-break-inside: avoid; }
+            tr { page-break-inside: avoid; }
+            img { max-width: 100% !important; }
+        }
+    </style>
+    <div class="page-header">
+        <div class="row">
+            <div class="col-sm-12">
+                <div class="page-sub-header">
+                    <h3 class="page-title d-flex align-items-center">
+                        <i class="fas fa-graduation-cap me-2" style="color: #007A33;"></i>HESLB Loan Declaration Form Review
+                    </h3>
+                </div>
+            </div>
+        </div>
+    </div>
+@endsection
 
-            .section {
-                border: 1px solid #afa6a6;
-                padding: 15px;
-                margin-bottom: 20px;
-            }
-
-            .section h2 {
-                margin-top: 0;
-            }
-
-            .input-field {
-                width: 100%;
-                padding: 8px;
-                margin-top: 5px;
-            }
-
-            .button {
-                background-color: #4CAF50;
-                color: white;
-                padding: 10px 20px;
-                border: none;
-                cursor: pointer;
-            }
-
-            .custom-bullets {
-                list-style-type: disc;
-                margin-left: 20px;
-            }
-
-            .table td {
-                padding: 8px;
-                border: 1px solid #ddd;
-            }
-        </style>
-
-        <div class="page-header">
-            <div class="row">
-                <div class="col-sm-12">
-                    <div class="text-center d-flex justify-content-between align-items-center border p-2">
-                        <img src="{{ asset('assets/img/ccbrt.jpg') }}" alt="CCBRT Stamp" class="img-fluid"
-                            style="max-width: 80px;">
-                        <div>
-                            <h3 class="fw-bold" style="color: #459c51;">HIGHER EDUCATION STUDENTS LOANS BOARD</h3>
-                            <p class="mb-0 text-muted" style="font-style: italic;">Employee declaration </p>
+@section('content')
+    <div class="page-wrapper">
+        <div class="content container-fluid">
+            <div class="row justify-content-center">
+                <div class="col-lg-10 col-xl-9">
+                    <!-- Header Card -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div class="d-flex align-items-center">
+                                    <img src="{{ asset('assets/img/ccbrt.jpg') }}" alt="CCBRT Logo" class="img-fluid me-3" style="max-width: 80px;">
+                                    <div>
+                                        <h4 class="mb-0" style="color: #007A33;">Higher Education Students Loans Board</h4>
+                                        <small class="text-muted">Employee Declaration - HR.32</small>
+                                    </div>
+                                </div>
+                                <div class="text-end">
+                                    <span class="badge bg-light text-dark">Form ID: #{{ $heslbForm->access_id }}</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="fw-bold" style="font-size: 1.5rem; color: grey;">HR.32</div>
+                    </div>
+
+                    <!-- HESLB Information Card -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-white border-bottom">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-info-circle me-2 text-info"></i>1. HESLB Information
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <ul class="list-unstyled mb-0">
+                                <li class="mb-2"><i class="fas fa-check-circle me-2 text-success"></i>CCBRT as an employer is legally required to ensure the recovery of outstanding HESLB loans from its employees.</li>
+                                <li class="mb-2"><i class="fas fa-check-circle me-2 text-success"></i>Employees of CCBRT must declare whether they have an outstanding HESLB loan.</li>
+                                <li class="mb-2"><i class="fas fa-check-circle me-2 text-success"></i>CCBRT will confirm outstanding obligations with HESLB for its employees.</li>
+                                <li class="mb-2"><i class="fas fa-check-circle me-2 text-success"></i>In accordance with the law, monthly deductions are made as per the percentage specified in the HESLB Act through payroll, with CCBRT submitting the deductions to HESLB on behalf of the employee.</li>
+                                <li class="mb-2"><i class="fas fa-check-circle me-2 text-success"></i>HESLB deductions take precedence over all other loan deductions applicable to an employee.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Declaration Card -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-white border-bottom">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-file-signature me-2 text-success"></i>2. Employee Declaration
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-light border">
+                                <p class="mb-3">
+                                    I, <strong>{{ trim(($heslbForm->fname ?? '') . ' ' . ($heslbForm->mname ?? '') . ' ' . ($heslbForm->lname ?? '')) }}</strong>,
+                                    hereby confirm the following:
+                                </p>
+                                @if($heslbForm->has_loan == 'Yes')
+                                    <p class="mb-0">
+                                        I have obtained a loan from the HESLB loans board under Form IV Index No.
+                                        <strong>{{ $heslbForm->form_iv_index ?? 'N/A' }}</strong>, which is still to be paid back,
+                                        and I hereby instruct CCBRT to deduct from my monthly salary as per the guidelines from the HESLB.
+                                        Deductions will start in the next upcoming payroll.
+                                    </p>
+                                @else
+                                    <p class="mb-0">
+                                        I have no outstanding loan from the HESLB loans board.
+                                    </p>
+                                @endif
+                            </div>
+                            <div class="row g-3 mt-2">
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">Employee Name</label>
+                                    <p class="mb-0 fw-semibold">
+                                        {{ trim(($heslbForm->fname ?? '') . ' ' . ($heslbForm->mname ?? '') . ' ' . ($heslbForm->lname ?? '')) }}
+                                    </p>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">Form IV Index No.</label>
+                                    <p class="mb-0 fw-semibold">
+                                        {{ $heslbForm->form_iv_index ?? 'N/A' }}
+                                    </p>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">Loan Status</label>
+                                    <p class="mb-0">
+                                        @if($heslbForm->has_loan == 'Yes')
+                                            <span class="badge bg-warning">Has Outstanding Loan</span>
+                                        @else
+                                            <span class="badge bg-success">No Outstanding Loan</span>
+                                        @endif
+                                    </p>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">Employee Signature</label>
+                                    <div>
+                                        @if ($heslbForm->signature)
+                                            <img src="data:image/png;base64,{{ $heslbForm->signature }}" alt="User Signature"
+                                                class="img-thumbnail" style="max-width: 120px; height: auto; border: 1px solid #dee2e6;">
+                                        @else
+                                            <span class="text-muted">No Signature</span>
+                                        @endif
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">Date</label>
+                                    <p class="mb-0 fw-semibold">{{ \Carbon\Carbon::parse($heslbForm->created_at ?? now())->format('d F Y') }}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- HR Confirmation Card -->
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-white border-bottom">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-clipboard-check me-2 text-info"></i>3. HR Confirmation Receipt
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">HR Officer Name</label>
+                                    <p class="mb-0 fw-semibold">
+                                        @if ($isApproved && $HrToApprove)
+                                            {{ trim(($HrToApprove->fname ?? '') . ' ' . ($HrToApprove->lname ?? '')) }}
+                                        @elseif ($isRejected && $rejectedBy)
+                                            {{ trim(($rejectedBy->fname ?? '') . ' ' . ($rejectedBy->lname ?? '')) }}
+                                        @elseif ($HrToApprove)
+                                            {{ trim(($HrToApprove->fname ?? '') . ' ' . ($HrToApprove->lname ?? '')) }}
+                                        @else
+                                            <span class="text-muted">Not Assigned</span>
+                                        @endif
+                                    </p>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">HR Signature</label>
+                                    <div>
+                                        @if ($isApproved && $HrToApprove && $HrToApprove->signature)
+                                            <img src="data:image/png;base64,{{ $HrToApprove->signature }}" alt="HR Officer Signature"
+                                                class="img-thumbnail" style="max-width: 120px; height: auto; border: 1px solid #dee2e6;">
+                                        @elseif ($isRejected && $rejectedBy && $rejectedBy->signature)
+                                            <img src="data:image/png;base64,{{ $rejectedBy->signature }}" alt="HR Officer Signature"
+                                                class="img-thumbnail" style="max-width: 120px; height: auto; border: 1px solid #dee2e6;">
+                                        @else
+                                            <span class="text-muted">{{ ($isApproved || $isRejected) ? 'No Signature' : 'Pending' }}</span>
+                                        @endif
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="text-muted small mb-1">Date</label>
+                                    <p class="mb-0 fw-semibold">
+                                        @if ($isApproved && $HrToApprove && $HrToApprove->updated_at)
+                                            {{ \Carbon\Carbon::parse($HrToApprove->updated_at)->format('d F Y') }}
+                                        @elseif ($isRejected && $rejectedAt)
+                                            {{ \Carbon\Carbon::parse($rejectedAt)->format('d F Y') }}
+                                        @else
+                                            <span class="text-muted">Pending</span>
+                                        @endif
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Status Badge -->
+                    @if(isset($isApproved) && $isApproved)
+                        <div class="alert alert-success mb-4" role="alert">
+                            <div class="d-flex align-items-center">
+                                <i class="fas fa-check-circle me-2 fs-4"></i>
+                                <div>
+                                    <strong>Approved</strong>
+                                    @if($HrToApprove)
+                                        <p class="mb-0 small">Approved by {{ trim(($HrToApprove->fname ?? '') . ' ' . ($HrToApprove->lname ?? '')) }} on {{ \Carbon\Carbon::parse($HrToApprove->updated_at)->format('d F Y') }}</p>
+                                    @endif
+                                </div>
+                            </div>
+                        </div>
+                    @elseif(isset($isRejected) && $isRejected)
+                        <div class="alert alert-danger mb-4" role="alert">
+                            <div class="d-flex align-items-start">
+                                <i class="fas fa-times-circle me-2 fs-4 mt-1"></i>
+                                <div class="flex-grow-1">
+                                    <strong>Rejected</strong>
+                                    @if($rejectedBy)
+                                        <p class="mb-1 small">Rejected by {{ trim(($rejectedBy->fname ?? '') . ' ' . ($rejectedBy->lname ?? '')) }} 
+                                            @if($rejectedAt)
+                                                on {{ \Carbon\Carbon::parse($rejectedAt)->format('d F Y') }}
+                                            @endif
+                                        </p>
+                                    @endif
+                                    @if($rejectionReason)
+                                        <div class="mt-2">
+                                            <strong class="small">Rejection Reason:</strong>
+                                            <p class="mb-0 small">{{ $rejectionReason }}</p>
+                                        </div>
+                                    @endif
+                                </div>
+                            </div>
+                        </div>
+                    @endif
+
+                    <!-- Action Buttons -->
+                    <div class="card shadow-sm">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <a href="{{ route('requestapprove.index') }}" class="btn btn-outline-secondary">
+                                    <i class="fas fa-arrow-left me-2"></i>Back
+                                </a>
+                                @php
+                                    $hasPendingAction = !$isApproved && !$isRejected && \App\Models\WorkFlowHistory::where('work_flow_id', $workflow->id)
+                                        ->where('attended_by', Auth::id())
+                                        ->where('status', 0)
+                                        ->exists();
+                                @endphp
+                                @if($hasPendingAction)
+                                    <div>
+                                        <button type="button" class="btn btn-success me-2"
+                                            onclick="approveHeslbForm('{{ $heslbForm->access_id }}')">
+                                            <i class="fas fa-check-circle me-2"></i>Approve
+                                        </button>
+                                        <button type="button" class="btn btn-danger"
+                                            onclick="rejectHeslbForm('{{ $heslbForm->access_id }}')">
+                                            <i class="fas fa-times-circle me-2"></i>Reject
+                                        </button>
+                                    </div>
+                                @elseif(isset($isApproved) && $isApproved)
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="badge bg-success fs-6 px-3 py-2">
+                                            <i class="fas fa-check-circle me-1"></i>Already Approved
+                                        </span>
+                                        <button type="button" class="btn btn-success btn-sm" onclick="window.print()">
+                                            <i class="fas fa-file-pdf me-1"></i> Download PDF
+                                        </button>
+                                    </div>
+                                @elseif(isset($isRejected) && $isRejected)
+                                    <div>
+                                        <span class="badge bg-danger fs-6 px-3 py-2">
+                                            <i class="fas fa-times-circle me-1"></i>Rejected
+                                        </span>
+                                    </div>
+                                @endif
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
-
-        <!-- Section 1: HESLB Information -->
-        <div class="section">
-            <h4>1. HESLB Information</h4>
-            <div class="mb-4">
-                <ul class="custom-bullets">
-                    <li>CCBRT as an employer is legally required to ensure the recovery of outstanding HESLB loans from its
-                        employees.</li>
-                    <li>Employees of CCBRT must declare whether they have an outstanding HESLB loan.</li>
-                    <li>CCBRT will confirm outstanding obligations with HESLB for its employees.</li>
-                    <li>In accordance with the law, monthly deductions are made as per the percentage specified in the HESLB
-                        Act through payroll, with CCBRT submitting the deductions to HESLB on behalf of the employee.</li>
-                    <li>HESLB deductions take precedence over all other loan deductions applicable to an employee.</li>
-                </ul>
-            </div>
-        </div>
-
-        <!-- Section 2: Declaration -->
-        <div class="section">
-            <h4>2. Declaration</h4>
-            <p>I, <strong>{{ $heslbForm->fname }} {{ $heslbForm->mname }} {{ $heslbForm->lname }}</strong>, hereby confirm
-                the following:</p>
-            <p>I have obtained a loan from the HESLB loans board under Form IV Index No.
-                <strong>{{ $heslbForm->form_iv_index }}</strong><br>
-                which is still to be paid back, and I hereby instruct CCBRT to deduct from my monthly salary as per the
-                guidelines from the HESLB. Deductions will start in the next upcoming payroll.
-            </p>
-            <p>I have no outstanding loan from the HESLB loans board.</p>
-            <p>Name: <strong>{{ $heslbForm->fname }} {{ $heslbForm->mname }} {{ $heslbForm->lname }}</strong>.</p>
-            <p>Staff Signature:
-                @if ($heslbForm->signature)
-                    <img src="data:image/png;base64,{{ $heslbForm->signature }}" alt="User Signature"
-                        style="max-width: 100px; height: auto; vertical-align: middle;">
-                @else
-                    <span>No Signature</span>
-                @endif
-            </p>
-            <p>Date: <strong>{{ \Carbon\Carbon::now()->format('d, F Y') }}</strong></p>
-        </div>
-
-        <!-- Section 3: HR Confirmation of Receipt -->
-        <div class="section">
-            <h5 class="mb-3">3. HR Confirmation of Receipt</h5>
-            <table style="width: 100%; border-collapse: collapse;">
-                <tbody>
-                    <tr>
-                        <td class="w-33"><strong>HR Officer Name:</strong>
-                            {{ trim(($HrToApprove->fname ?? '') . ' ' . ($HrToApprove->lname ?? '')) }}</td>
-                        <td class="w-33"><strong>HR Signature:</strong>
-                            @if ($HrToApprove)
-                                <img src="data:image/png;base64,{{ $HrToApprove->signature }}" alt="HR Officer Signature"
-                                    style="max-width: 10%; height: 5%;">
-                            @endif
-                        </td>
-                        <td class="w-33"><strong>Date:</strong>
-                            @if ($heslbForm->status == 0 && $HrToApprove && $HrToApprove->updated_at)
-                                {{ \Carbon\Carbon::parse($HrToApprove->updated_at)->format('d F Y') }}
-                            @elseif ($heslbForm->status == 1 && $HrToApprove && $HrToApprove->updated_at)
-                                {{ \Carbon\Carbon::parse($HrToApprove->updated_at)->format('d F Y') }}
-                            @endif
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Action Buttons -->
-        <div class="mt-3 d-flex justify-content-between mt-3">
-            <button type="button" class="btn btn-secondary" onclick="window.history.back()">← Back</button>
-
-            <button type="button" class="btn btn-success"
-                onclick="approveHeslbForm('{{ $heslbForm->access_id }}')">Confirm</button>
-            <button type="button" class="btn btn-danger"
-                onclick="rejectHeslbForm('{{ $heslbForm->access_id }}')">Reject</button>
-        </div>
-        <br>
     </div>
-    <br>
-@endsection
 
-<script>
-    function approveHeslbForm(access_id) {
-        $.ajaxSetup({
-            headers: {
-                'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
-            }
-        });
-        Swal.fire({
-            title: 'Are you sure?',
-            text: 'Do you want to confirm this request?',
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonText: 'Yes, confirm it!',
-            cancelButtonText: 'No, cancel',
-            reverseButtons: true
-        }).then((result) => {
-            if (result.isConfirmed) {
-                $.ajax({
-                    url: '/heslb_form_confirm',
-                    method: 'POST',
-                    data: {
-                        access_id: access_id
-                    },
-                    success: function(response) {
-                        window.location.href = '/requestapprove';
-                    },
-                    error: function(xhr, status, error) {
-                        console.log('Error confirming:', error);
-                    }
-                });
-            } else {
-                console.log('Confirmation cancelled');
-            }
-        });
-    }
-
-    function rejectHeslbForm(access_id) {
-        Swal.fire({
-            title: 'Are you sure?',
-            text: 'You are about to reject this submission.',
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonText: 'Reject',
-            cancelButtonText: 'Cancel',
-            input: 'textarea',
-            inputPlaceholder: 'Please provide a rejection reason...',
-            inputAttributes: {
-                'aria-label': 'Type your rejection reason here'
-            },
-            showLoaderOnConfirm: true,
-            preConfirm: (comment) => {
-                if (!comment) {
-                    Swal.showValidationMessage('Please provide a rejection reason');
-                    return false;
+    <!-- Script for Actions -->
+    <script>
+        function approveHeslbForm(access_id) {
+            $.ajaxSetup({
+                headers: {
+                    'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
                 }
-                return comment;
-            }
-        }).then((result) => {
-            if (result.isConfirmed) {
-                var comment = result.value;
+            });
+            Swal.fire({
+                title: 'Are you sure?',
+                text: 'Do you want to confirm this request?',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, confirm it!',
+                cancelButtonText: 'No, cancel',
+                reverseButtons: true
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    $.ajax({
+                        url: '/heslb_form_confirm',
+                        method: 'POST',
+                        data: {
+                            access_id: access_id
+                        },
+                        success: function(response) {
+                            window.location.href = '/requestapprove';
+                        },
+                        error: function(xhr, status, error) {
+                            Swal.fire('Error!', 'There was an error confirming the form.', 'error');
+                        }
+                    });
+                }
+            });
+        }
 
-                $.ajax({
-                    url: '/heslb_form_reject',
-                    method: 'POST',
-                    data: {
-                        access_id: access_id,
-                        status: 'rejected',
-                        comment: comment,
-                        _token: '{{ csrf_token() }}'
-                    },
-                    success: function(response) {
-                        Swal.fire('Rejected!', response.message, 'success')
-                            .then(() => {
-                                window.location.href = '/requestapprove';
-                            });
-                    },
-                    error: function(xhr, status, error) {
-                        Swal.fire('Error!', 'There was an error rejecting the submission.',
-                            'error');
+        function rejectHeslbForm(access_id) {
+            Swal.fire({
+                title: 'Are you sure?',
+                text: 'You are about to reject this submission.',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Reject',
+                cancelButtonText: 'Cancel',
+                input: 'textarea',
+                inputPlaceholder: 'Please provide a rejection reason...',
+                inputAttributes: {
+                    'aria-label': 'Type your rejection reason here'
+                },
+                showLoaderOnConfirm: true,
+                preConfirm: (comment) => {
+                    if (!comment) {
+                        Swal.showValidationMessage('Please provide a rejection reason');
+                        return false;
                     }
-                });
-            } else {
-                console.log('Rejection cancelled');
-            }
-        });
-    }
-</script>
+                    return comment;
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    var comment = result.value;
+
+                    $.ajax({
+                        url: '/heslb_form_reject',
+                        method: 'POST',
+                        data: {
+                            access_id: access_id,
+                            status: 'rejected',
+                            comment: comment,
+                            _token: '{{ csrf_token() }}'
+                        },
+                        success: function(response) {
+                            Swal.fire('Rejected!', response.message, 'success')
+                                .then(() => {
+                                    window.location.href = '/requestapprove';
+                                });
+                        },
+                        error: function(xhr, status, error) {
+                            Swal.fire('Error!', 'There was an error rejecting the submission.',
+                                'error');
+                        }
+                    });
+                }
+            });
+        }
+    </script>
+@endsection
